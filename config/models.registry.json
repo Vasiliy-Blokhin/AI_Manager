@@ -1,0 +1,25 @@
+{
+  "models": [
+    {
+      "name": "llama3.1-8b",
+      "backend": "ollama",
+      "model_ref": "llama3.1:8b",
+      "display_name": "Llama 3.1 8B",
+      "description": "Универсальная модель Meta"
+    },
+    {
+      "name": "qwen2.5-7b",
+      "backend": "ollama",
+      "model_ref": "qwen2.5:7b",
+      "display_name": "Qwen 2.5 7B",
+      "description": "Сильна в коде и математике"
+    },
+    {
+      "name": "phi3-mini-gguf",
+      "backend": "llama_server",
+      "model_ref": "microsoft/Phi-3-mini-4k-instruct-gguf:Phi-3-mini-4k-instruct-q4.gguf",
+      "display_name": "Phi-3 Mini (GGUF)",
+      "description": "Лёгкая модель через llama.cpp"
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+services:
+  ai-manager:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      AIM_OLLAMA_URL: http://host.docker.internal:11434
+      AIM_AUTO_INSTALL: "false"
+    volumes:
+      - ./config/models.registry.json:/srv/ai-manager/config/models.registry.json:ro
+      - aim-models:/root/.cache/ai-manager
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+volumes:
+  aim-models:

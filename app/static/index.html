@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Manager</title>
+<style>
+  :root { --bg:#0f172a; --card:#1e293b; --fg:#e2e8f0; --accent:#38bdf8; --ok:#22c55e; --bad:#ef4444; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, sans-serif; background:var(--bg); color:var(--fg); }
+  header { padding:16px 24px; font-size:20px; font-weight:600; border-bottom:1px solid #334155; }
+  main { display:grid; grid-template-columns: 1fr 1fr; gap:16px; padding:16px 24px; }
+  @media (max-width: 900px) { main { grid-template-columns:1fr; } }
+  .card { background:var(--card); border-radius:12px; padding:16px; }
+  table { width:100%; border-collapse:collapse; }
+  td, th { padding:8px; border-bottom:1px solid #334155; text-align:left; font-size:14px; }
+  button { background:var(--accent); border:0; border-radius:8px; padding:6px 12px; cursor:pointer; font-weight:600; margin-right:4px; }
+  button.stop { background:var(--bad); color:#fff; }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  .badge { padding:2px 8px; border-radius:99px; font-size:12px; }
+  .b-ok { background:#14532d; color:var(--ok); } .b-no { background:#7f1d1d; color:var(--bad); }
+  .b-run { background:#0c4a6e; color:var(--accent); }
+  textarea { width:100%; height:120px; background:#0b1220; color:var(--fg); border:1px solid #334155; border-radius:8px; padding:8px; }
+  pre { white-space:pre-wrap; background:#0b1220; border-radius:8px; padding:12px; min-height:80px; }
+  #active { font-weight:600; color:var(--accent); }
+</style>
+</head>
+<body>
+<header>🤖 AI Manager <span id="active"></span></header>
+<main>
+  <div class="card">
+    <h3>Модели</h3>
+    <button class="stop" onclick="stopAll()">⏹ Выключить всё</button>
+    <button onclick="refresh()">🔄 Обновить</button>
+    <table id="tbl"><thead><tr>
+      <th>Модель</th><th>Бэкенд</th><th>Статус</th><th></th>
+    </tr></thead><tbody></tbody></table>
+  </div>
+  <div class="card">
+    <h3>Чат с активной моделью</h3>
+    <textarea id="q" placeholder="Ваш запрос..."></textarea><br><br>
+    <button onclick="send()">Отправить</button>
+    <pre id="a"></pre>
+  </div>
+</main>
+<script>
+async function api(path, opts) {
+  const r = await fetch('/api' + path, opts ? {method:'POST', headers:{'Content-Type':'application/json'}, ...opts} : {});
+  const d = await r.json();
+  if (!r.ok) { alert(d.error?.message || r.statusText); throw new Error(r.status); }
+  return d;
+}
+async function refresh() {
+  const d = await api('/models');
+  document.getElementById('active').textContent = d.active ? `— активна: ${d.active}` : '— все выключены';
+  const tb = document.querySelector('#tbl tbody'); tb.innerHTML = '';
+  for (const m of d.models) {
+    const tr = document.createElement('tr');
+    const status = m.running ? '<span class="badge b-run">запущена</span>'
+                  : m.installed ? '<span class="badge b-ok">установлена</span>'
+                  : '<span class="badge b-no">нет</span>';
+    tr.innerHTML = `<td>${m.display_name || m.name}</td><td>${m.backend}</td><td>${status}</td><td></td>`;
+    const td = tr.lastChild;
+    if (!m.installed) {
+      const b = document.createElement('button'); b.textContent='⬇ Установить';
+      b.onclick = async () => { b.disabled=true; b.textContent='Скачивание...';
+        try { await api('/models/install', {body: JSON.stringify({name:m.name})}); } finally { refresh(); } };
+      td.appendChild(b);
+    } else {
+      const s = document.createElement('button'); s.textContent = m.running ? '✔ Активна' : '▶ Запустить';
+      s.disabled = !!m.running;
+      s.onclick = async () => { s.disabled=true;
+        try { await api(`/models/${m.name}/start`, {body:'{}'}); } finally { refresh(); } };
+      td.appendChild(s);
+    }
+    tb.appendChild(tr);
+  }
+}
+async function stopAll() { await api('/models/stop', {body:'{}'}); refresh(); }
+async function send() {
+  const a = document.getElementById('a');
+  a.textContent = '...';
+  try {
+    const d = await api('/chat', {body: JSON.stringify({messages:[{role:'user', content:document.getElementById('q').value}]})});
+    a.textContent = d.content + `\n\n— ${d.model} (${d.backend}), токенов: ${d.usage.total_tokens}`;
+  } catch { a.textContent = 'Ошибка запроса'; }
+}
+refresh(); setInterval(refresh, 10000);
+</script>
+</body>
+</html>
