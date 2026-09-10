@@ -3,15 +3,14 @@ from __future__ import annotations
 
 import abc
 from dataclasses import dataclass
-from typing import Optional
 
 from ..registry import ModelEntry
-from ..schemas import ChatRequest, ChatResponse
+from ..schemas import ChatRequest, ChatResponse, ImageRequest, ImageResponse
 
 
 @dataclass
 class StartInfo:
-    """Информация о запущенном процессе модели."""
+    """Информация о запущенной модели."""
     pid: int
     endpoint: str
 
@@ -24,10 +23,15 @@ class Backend(abc.ABC):
     """Каждый бэкенд привязан к одной записи реестра (модели)."""
 
     backend_name: str = "abstract"
+    supports_images: bool = False  # False = текстовая модель
 
     def __init__(self, entry: ModelEntry, settings: dict):
         self.entry = entry
         self.settings = settings
+
+    @property
+    def model_type(self) -> str:
+        return "image" if self.supports_images else "text"
 
     # --- жизненный цикл ---
     @abc.abstractmethod
@@ -44,13 +48,15 @@ class Backend(abc.ABC):
 
     @abc.abstractmethod
     def stop(self) -> None:
-        """Остановить модель (идемпотентно)."""
+        """Остановить модель (идемпотентно), освободить VRAM."""
 
     @abc.abstractmethod
     def is_running(self) -> bool:
-        """Проверить, что модель реально отвечает."""
+        """Проверить, что модель реально работает."""
 
     # --- инференс ---
-    @abc.abstractmethod
     def chat(self, request: ChatRequest) -> ChatResponse:
-        """Стандартизированный запрос; вернуть ChatResponse."""
+        raise BackendError(f"Бэкенд {self.backend_name} не поддерживает текстовые запросы")
+
+    def generate_image(self, request: ImageRequest) -> ImageResponse:
+        raise BackendError(f"Бэкенд {self.backend_name} не поддерживает генерацию изображений")

@@ -8,7 +8,8 @@
   :root { --bg:#0f172a; --card:#1e293b; --fg:#e2e8f0; --accent:#38bdf8; --ok:#22c55e; --bad:#ef4444; }
   * { box-sizing: border-box; }
   body { margin:0; font-family: system-ui, sans-serif; background:var(--bg); color:var(--fg); }
-  header { padding:16px 24px; font-size:20px; font-weight:600; border-bottom:1px solid #334155; }
+  header { padding:16px 24px; font-size:20px; font-weight:600; border-bottom:1px solid #334155;
+           display:flex; gap:16px; align-items:center; }
   main { display:grid; grid-template-columns: 1fr 1fr; gap:16px; padding:16px 24px; }
   @media (max-width: 900px) { main { grid-template-columns:1fr; } }
   .card { background:var(--card); border-radius:12px; padding:16px; }
@@ -17,15 +18,33 @@
   button { background:var(--accent); border:0; border-radius:8px; padding:6px 12px; cursor:pointer; font-weight:600; margin-right:4px; }
   button.stop { background:var(--bad); color:#fff; }
   button:disabled { opacity:.4; cursor:not-allowed; }
-  .badge { padding:2px 8px; border-radius:99px; font-size:12px; }
+  .badge { padding:2px 8px; border-radius:99px; font-size:12px; white-space:nowrap; }
   .b-ok { background:#14532d; color:var(--ok); } .b-no { background:#7f1d1d; color:var(--bad); }
   .b-run { background:#0c4a6e; color:var(--accent); }
-  textarea { width:100%; height:120px; background:#0b1220; color:var(--fg); border:1px solid #334155; border-radius:8px; padding:8px; }
+  textarea, input[type=text], input[type=number] { width:100%; background:#0b1220; color:var(--fg);
+      border:1px solid #334155; border-radius:8px; padding:8px; }
+  textarea { height:110px; }
   pre { white-space:pre-wrap; background:#0b1220; border-radius:8px; padding:12px; min-height:80px; }
+  img.preview { max-width:100%; border-radius:8px; margin-top:8px; }
+  .row { display:flex; gap:8px; margin:8px 0; }
+  .row > * { flex:1; }
+  #pwd-overlay { position:fixed; inset:0; background:rgba(2,6,23,.92); display:flex;
+                 align-items:center; justify-content:center; z-index:10; }
+  #pwd-box { background:var(--card); padding:24px; border-radius:12px; width:320px; }
   #active { font-weight:600; color:var(--accent); }
 </style>
 </head>
 <body>
+
+<div id="pwd-overlay">
+  <div id="pwd-box">
+    <h3>🔒 Введите пароль</h3>
+    <input type="password" id="pwd" placeholder="Пароль из .env (AIM_PASSWORD)" style="width:100%">
+    <br><br><button onclick="savePwd()">Войти</button>
+    <div id="pwd-err" style="color:var(--bad);font-size:13px;margin-top:8px;"></div>
+  </div>
+</div>
+
 <header>🤖 AI Manager <span id="active"></span></header>
 <main>
   <div class="card">
@@ -33,23 +52,62 @@
     <button class="stop" onclick="stopAll()">⏹ Выключить всё</button>
     <button onclick="refresh()">🔄 Обновить</button>
     <table id="tbl"><thead><tr>
-      <th>Модель</th><th>Бэкенд</th><th>Статус</th><th></th>
+      <th>Модель</th><th>Тип</th><th>Статус</th><th></th>
     </tr></thead><tbody></tbody></table>
   </div>
-  <div class="card">
-    <h3>Чат с активной моделью</h3>
-    <textarea id="q" placeholder="Ваш запрос..."></textarea><br><br>
-    <button onclick="send()">Отправить</button>
-    <pre id="a"></pre>
+
+  <div>
+    <div class="card">
+      <h3>💬 Чат (текстовая модель)</h3>
+      <textarea id="q" placeholder="Ваш запрос..."></textarea><br><br>
+      <button onclick="sendChat()">Отправить</button>
+      <pre id="a"></pre>
+    </div>
+    <br>
+    <div class="card">
+      <h3>🎨 Генерация изображения (графическая модель)</h3>
+      <textarea id="iprompt" placeholder="Описание изображения..."></textarea>
+      <div class="row">
+        <input type="number" id="isteps" value="25" min="1" max="150" title="Шаги">
+        <input type="number" id="iw" value="512" step="64" title="Ширина">
+        <input type="number" id="ih" value="512" step="64" title="Высота">
+      </div>
+      <button onclick="sendImage()">Сгенерировать</button>
+      <div id="img-box"></div>
+    </div>
   </div>
 </main>
+
 <script>
+let PWD = localStorage.getItem('aim_pwd') || '';
+if (PWD) document.getElementById('pwd-overlay').style.display = 'none';
+
+function savePwd() {
+  PWD = document.getElementById('pwd').value;
+  localStorage.setItem('aim_pwd', PWD);
+  api('/status').then(() => {
+    document.getElementById('pwd-overlay').style.display = 'none';
+    document.getElementById('pwd-err').textContent = '';
+    refresh();
+  }).catch(() => {
+    PWD = ''; localStorage.removeItem('aim_pwd');
+    document.getElementById('pwd-err').textContent = 'Неверный пароль';
+  });
+}
+
 async function api(path, opts) {
-  const r = await fetch('/api' + path, opts ? {method:'POST', headers:{'Content-Type':'application/json'}, ...opts} : {});
+  const r = await fetch('/api' + path, Object.assign(
+    {headers: {'X-API-Password': PWD, 'Content-Type': 'application/json'}},
+    opts || {}));
+  if (r.status === 401) {
+    document.getElementById('pwd-overlay').style.display = 'flex';
+    throw new Error('401');
+  }
   const d = await r.json();
-  if (!r.ok) { alert(d.error?.message || r.statusText); throw new Error(r.status); }
+  if (!r.ok) { alert((d.error && d.error.message) || r.statusText); throw new Error(r.status); }
   return d;
 }
+
 async function refresh() {
   const d = await api('/models');
   document.getElementById('active').textContent = d.active ? `— активна: ${d.active}` : '— все выключены';
@@ -58,34 +116,56 @@ async function refresh() {
     const tr = document.createElement('tr');
     const status = m.running ? '<span class="badge b-run">запущена</span>'
                   : m.installed ? '<span class="badge b-ok">установлена</span>'
-                  : '<span class="badge b-no">нет</span>';
-    tr.innerHTML = `<td>${m.display_name || m.name}</td><td>${m.backend}</td><td>${status}</td><td></td>`;
+                  : '<span class="badge b-no">нет (~' + (m.type === 'image' ? '2' : '9') + ' ГБ)</span>';
+    tr.innerHTML = `<td>${m.display_name || m.name}<br><small>${m.description || ''}</small></td>
+                    <td>${m.type === 'image' ? '🎨' : '💬'}</td><td>${status}</td><td></td>`;
     const td = tr.lastChild;
     if (!m.installed) {
-      const b = document.createElement('button'); b.textContent='⬇ Установить';
-      b.onclick = async () => { b.disabled=true; b.textContent='Скачивание...';
-        try { await api('/models/install', {body: JSON.stringify({name:m.name})}); } finally { refresh(); } };
+      const b = document.createElement('button'); b.textContent = '⬇ Установить';
+      b.onclick = async () => { b.disabled = true; b.textContent = 'Скачивание... (долго)';
+        try { await api('/models/install', {method: 'POST', body: JSON.stringify({name: m.name})}); }
+        finally { refresh(); } };
       td.appendChild(b);
     } else {
       const s = document.createElement('button'); s.textContent = m.running ? '✔ Активна' : '▶ Запустить';
       s.disabled = !!m.running;
-      s.onclick = async () => { s.disabled=true;
-        try { await api(`/models/${m.name}/start`, {body:'{}'}); } finally { refresh(); } };
+      s.onclick = async () => { s.disabled = true;
+        try { await api('/models/' + m.name + '/start', {method: 'POST', body: '{}'}); }
+        finally { refresh(); } };
       td.appendChild(s);
     }
     tb.appendChild(tr);
   }
 }
-async function stopAll() { await api('/models/stop', {body:'{}'}); refresh(); }
-async function send() {
+
+async function stopAll() { await api('/models/stop', {method: 'POST', body: '{}'}); refresh(); }
+
+async function sendChat() {
   const a = document.getElementById('a');
   a.textContent = '...';
   try {
-    const d = await api('/chat', {body: JSON.stringify({messages:[{role:'user', content:document.getElementById('q').value}]})});
-    a.textContent = d.content + `\n\n— ${d.model} (${d.backend}), токенов: ${d.usage.total_tokens}`;
-  } catch { a.textContent = 'Ошибка запроса'; }
+    const d = await api('/chat', {method: 'POST', body: JSON.stringify(
+      {messages: [{role: 'user', content: document.getElementById('q').value}]})});
+    a.textContent = d.content + `\n\n— ${d.model}, токенов: ${d.usage.total_tokens}`;
+  } catch { a.textContent = 'Ошибка запроса (или активна графическая модель)'; }
 }
-refresh(); setInterval(refresh, 10000);
+
+async function sendImage() {
+  const box = document.getElementById('img-box');
+  box.innerHTML = 'Генерация...';
+  try {
+    const d = await api('/image', {method: 'POST', body: JSON.stringify({
+      prompt: document.getElementById('iprompt').value,
+      steps: +document.getElementById('isteps').value,
+      width: +document.getElementById('iw').value,
+      height: +document.getElementById('ih').value,
+    })});
+    box.innerHTML = `<img class="preview" src="data:image/png;base64,${d.image_base64}">
+                     <div><small>${d.model} · ${d.width}×${d.height} · шагов: ${d.steps}</small></div>`;
+  } catch { box.innerHTML = 'Ошибка (или активна текстовая модель)'; }
+}
+
+refresh(); setInterval(() => { if (PWD) refresh().catch(() => {}); }, 15000);
 </script>
 </body>
 </html>

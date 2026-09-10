@@ -1,25 +1,29 @@
 {
   "models": [
     {
-      "name": "llama3.1-8b",
-      "backend": "ollama",
-      "model_ref": "llama3.1:8b",
-      "display_name": "Llama 3.1 8B",
-      "description": "Универсальная модель Meta"
-    },
-    {
-      "name": "qwen2.5-7b",
-      "backend": "ollama",
-      "model_ref": "qwen2.5:7b",
-      "display_name": "Qwen 2.5 7B",
-      "description": "Сильна в коде и математике"
-    },
-    {
-      "name": "phi3-mini-gguf",
+      "name": "qwen25-coder-14b-unc",
       "backend": "llama_server",
-      "model_ref": "microsoft/Phi-3-mini-4k-instruct-gguf:Phi-3-mini-4k-instruct-q4.gguf",
-      "display_name": "Phi-3 Mini (GGUF)",
-      "description": "Лёгкая модель через llama.cpp"
+      "model_ref": "bartowski/Qwen2.5-Coder-14B-Instruct-abliterated-GGUF:Qwen2.5-Coder-14B-Instruct-abliterated-Q4_K_M.gguf",
+      "display_name": "Qwen2.5-Coder-14B (unc)",
+      "description": "Код: Python/JS, без цензуры (abliterated)",
+      "ngl": 99,
+      "context": 16384
+    },
+    {
+      "name": "qwen25-14b-unc-russian",
+      "backend": "llama_server",
+      "model_ref": "bartowski/Qwen2.5-14B_Uncensored_Instruct-GGUF:Qwen2.5-14B_Uncensored_Instruct-Q4_K_M.gguf",
+      "display_name": "Qwen2.5-14B Uncensored",
+      "description": "Текст, в т.ч. русский, без цензуры",
+      "ngl": 99,
+      "context": 16384
+    },
+    {
+      "name": "dreamshaper-8",
+      "backend": "openvino_sd",
+      "model_ref": "Lykon/dreamshaper-8",
+      "display_name": "DreamShaper 8",
+      "description": "Генерация изображений по запросу (SD 1.5)"
     }
   ]
 }

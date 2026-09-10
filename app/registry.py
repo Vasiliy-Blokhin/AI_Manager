@@ -33,6 +33,7 @@ class Registry:
         with open(self.path, encoding="utf-8") as f:
             data = json.load(f)
         models: Dict[str, ModelEntry] = {}
+        known = {"name", "backend", "model_ref", "display_name", "description"}
         for raw in data.get("models", []):
             entry = ModelEntry(
                 name=raw["name"],
@@ -40,9 +41,7 @@ class Registry:
                 model_ref=raw["model_ref"],
                 display_name=raw.get("display_name", raw["name"]),
                 description=raw.get("description", ""),
-                extra={k: v for k, v in raw.items()
-                       if k not in {"name", "backend", "model_ref",
-                                    "display_name", "description"}},
+                extra={k: v for k, v in raw.items() if k not in known},
             )
             if entry.name in models:
                 raise RegistryError(f"Дубликат модели: {entry.name}")

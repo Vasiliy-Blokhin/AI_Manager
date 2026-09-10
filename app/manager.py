@@ -6,13 +6,14 @@ from typing import Dict, List, Optional
 
 from .backends.base import Backend, BackendError
 from .backends.llama_server import LlamaServerBackend
-from .backends.ollama import OllamaBackend
+from .backends.openvino_sd import OpenVinoSdBackend
 from .registry import ModelEntry, Registry
-from .schemas import ChatRequest, ChatResponse, ModelInfo
+from .schemas import (ChatRequest, ChatResponse, ImageRequest, ImageResponse,
+                      ModelInfo)
 
 BACKENDS = {
-    OllamaBackend.backend_name: OllamaBackend,
     LlamaServerBackend.backend_name: LlamaServerBackend,
+    OpenVinoSdBackend.backend_name: OpenVinoSdBackend,
 }
 
 
@@ -22,6 +23,10 @@ class ModelNotFoundError(KeyError):
 
 class NotInstalledError(Exception):
     pass
+
+
+class WrongModelTypeError(Exception):
+    """Активна модель другого типа (текст/графика)."""
 
 
 class ModelManager:
@@ -51,15 +56,20 @@ class ModelManager:
                 infos.append(ModelInfo(
                     name=entry.name, backend=entry.backend,
                     display_name=entry.display_name, description=entry.description,
+                    type=be.model_type,
                     installed=be.is_installed(), running=running,
-                    pid=(be.start_info_pid() if hasattr(be, "start_info_pid") else None),
+                    pid=(be._proc.pid if running and getattr(be, "_proc", None) else None),
+                    endpoint=(be._port and f"http://127.0.0.1:{be._port}") if running and be.model_type == "text" else None,
                 ))
             return infos
 
     def status(self) -> dict:
         models = self.list_models()
+        active = self._active if any(m.name == self._active and m.running for m in models) else None
+        active_type = next((m.type for m in models if m.name == active), None)
         return {
-            "active": self._active if any(m.name == self._active and m.running for m in models) else None,
+            "active": active,
+            "active_type": active_type,
             "models_total": len(models),
             "models_installed": sum(m.installed for m in models),
             "models_running": sum(m.running for m in models),
@@ -85,9 +95,8 @@ class ModelManager:
             stopped: List[str] = []
             if self._active and self._active != name:
                 stopped = self._stop_active_locked()
-            elif self._active == name:
-                if be.is_running():
-                    return {"name": name, "running": True, "stopped": []}
+            elif self._active == name and be.is_running():
+                return {"name": name, "running": True, "stopped": []}
 
             be.start()
             self._active = name
@@ -103,18 +112,38 @@ class ModelManager:
             return []
         be = self._backends.get(self._active)
         if be:
-            be.stop()
+            be.stop()  # освобождает VRAM — ключевой механизм инварианта I1
         name, self._active = self._active, None
         return [name]
 
-    def chat(self, request: ChatRequest) -> ChatResponse:
+    # --- инференс ---
+    def _active_text_backend(self) -> Backend:
         with self._lock:
             if not self._active:
                 raise RuntimeError("NO_ACTIVE_MODEL")
             be = self._backends.get(self._active)
             if be is None or not be.is_running():
                 raise RuntimeError("NO_ACTIVE_MODEL")
-            return be.chat(request)
+            if be.model_type != "text":
+                raise WrongModelTypeError("Активна графическая модель — используйте POST /api/image")
+            return be
+
+    def _active_image_backend(self) -> Backend:
+        with self._lock:
+            if not self._active:
+                raise RuntimeError("NO_ACTIVE_MODEL")
+            be = self._backends.get(self._active)
+            if be is None or not be.is_running():
+                raise RuntimeError("NO_ACTIVE_MODEL")
+            if be.model_type != "image":
+                raise WrongModelTypeError("Активна текстовая модель — используйте POST /api/chat")
+            return be
+
+    def chat(self, request: ChatRequest) -> ChatResponse:
+        return self._active_text_backend().chat(request)
+
+    def image(self, request: ImageRequest) -> ImageResponse:
+        return self._active_image_backend().generate_image(request)
 
     def _get(self, name: str) -> ModelEntry:
         try:

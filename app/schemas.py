@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import List, Optional, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class Message(BaseModel):
@@ -12,11 +12,30 @@ class Message(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    """Стандартизированный запрос к любой модели (OpenAI-совместимое подмножество)."""
+    """Стандартизированный текстовый запрос к любой текстовой модели."""
     messages: List[Message]
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: Optional[int] = Field(default=None, ge=1)
     stream: bool = False
+
+
+class ImageRequest(BaseModel):
+    """Стандартизированный запрос генерации изображения."""
+    prompt: str = Field(min_length=1)
+    negative_prompt: str = ""
+    steps: int = Field(default=25, ge=1, le=150)
+    width: int = 512
+    height: int = 512
+    seed: Optional[int] = None
+
+    @field_validator("width", "height")
+    @classmethod
+    def _multiple_of_64(cls, v: int) -> int:
+        if v % 64 != 0:
+            raise ValueError("width/height должны быть кратны 64")
+        if not 256 <= v <= 1024:
+            raise ValueError("width/height должны быть в диапазоне 256..1024")
+        return v
 
 
 class Usage(BaseModel):
@@ -26,11 +45,22 @@ class Usage(BaseModel):
 
 
 class ChatResponse(BaseModel):
-    """Стандартизированный ответ от любой модели."""
+    """Стандартизированный ответ текстовой модели."""
     model: str
     backend: str
     content: str
     usage: Usage = Field(default_factory=Usage)
+
+
+class ImageResponse(BaseModel):
+    """Стандартизированный ответ графической модели (PNG в base64)."""
+    model: str
+    backend: str
+    width: int
+    height: int
+    steps: int
+    seed: Optional[int] = None
+    image_base64: str
 
 
 class ModelInfo(BaseModel):
@@ -38,6 +68,7 @@ class ModelInfo(BaseModel):
     backend: str
     display_name: str = ""
     description: str = ""
+    type: Literal["text", "image"] = "text"
     installed: bool = False
     running: bool = False
     pid: Optional[int] = None
@@ -72,6 +103,7 @@ class StopResponse(BaseModel):
 class StatusResponse(BaseModel):
     service: str = "ai-manager"
     active: Optional[str] = None
+    active_type: Optional[str] = None
     models_total: int = 0
     models_installed: int = 0
     models_running: int = 0

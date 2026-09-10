@@ -1,4 +1,4 @@
-"""Бэкенд llama.cpp server: скачивание GGUF с HuggingFace + запуск llama-server."""
+"""Текстовый бэкенд: GGUF-модели через llama-server (Vulkan/SYCL, 100% GPU на Intel Arc)."""
 from __future__ import annotations
 
 import os
@@ -19,12 +19,15 @@ from .base import Backend, BackendError, StartInfo
 
 class LlamaServerBackend(Backend):
     backend_name = "llama_server"
+    supports_images = False
 
     def __init__(self, entry: ModelEntry, settings: dict):
         super().__init__(entry, settings)
         self.bin = settings.get("llama_server_bin", "llama-server")
         self.cache_dir = Path(settings.get("hf_cache", "~/.cache/ai-manager")).expanduser() / entry.name
         self.port_range = settings.get("port_range", (8100, 8199))
+        self.gpu_layers = int(entry.extra.get("ngl", settings.get("gpu_layers", 99)))
+        self.context = int(entry.extra.get("context", 16384))
         self._proc: Optional[subprocess.Popen] = None
         self._port: Optional[int] = None
 
@@ -44,8 +47,7 @@ class LlamaServerBackend(Backend):
             raise BackendError(f"Неверный model_ref: {self.entry.model_ref}")
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         try:
-            hf_hub_download(repo_id=repo, filename=fname,
-                            local_dir=str(self.cache_dir))
+            hf_hub_download(repo_id=repo, filename=fname, local_dir=str(self.cache_dir))
         except Exception as e:
             raise BackendError(f"Не удалось скачать веса: {e}")
 
@@ -62,19 +64,21 @@ class LlamaServerBackend(Backend):
         if not self.is_installed():
             raise BackendError(f"Веса {self.entry.model_ref} не установлены. Сначала выполните install.")
         if shutil.which(self.bin) is None and not Path(self.bin).exists():
-            raise BackendError(f"Бинарник llama-server не найден: {self.bin}")
+            raise BackendError(f"Бинарник llama-server не найден: {self.bin}. "
+                               f"Выполните scripts\\setup.bat или задайте LLAMA_SERVER_BIN")
 
-        self.stop()
+        self.stop()  # инвариант I1: старый процесс этой модели не должен жить
         port = self._free_port()
         cmd = [self.bin, "-m", str(self._weights_path()),
                "--host", "127.0.0.1", "--port", str(port),
-               "-c", str(self.entry.extra.get("context", 4096))]
+               "-ngl", str(self.gpu_layers),     # все слои на GPU (Intel Arc)
+               "-c", str(self.context)]
         try:
+            # env наследуется: ONEAPI_DEVICE_SELECTOR и др. берутся из .env/системы
             self._proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as e:
             raise BackendError(f"Не удалось запустить llama-server: {e}")
 
-        # ждём health-check
         url = f"http://127.0.0.1:{port}"
         deadline = time.time() + 600
         while time.time() < deadline:
