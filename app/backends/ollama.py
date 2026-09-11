@@ -76,6 +76,10 @@ class OllamaBackend(Backend):
         except Exception:
             return False
 
+    @property
+    def openai_base_url(self) -> str:
+        return f"{self.base_url}/v1"
+
     # --- инференс ---
     def chat(self, request: ChatRequest) -> ChatResponse:
         payload = {

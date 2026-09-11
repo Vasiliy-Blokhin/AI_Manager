@@ -112,6 +112,13 @@ class LlamaServerBackend(Backend):
         except Exception:
             return False
 
+    @property
+    def openai_base_url(self) -> str:
+        """OpenAI-совместимый base активного llama-server (только localhost)."""
+        if not self._port:
+            raise BackendError("Модель не запущена")
+        return f"http://127.0.0.1:{self._port}/v1"
+
     # --- инференс ---
     def chat(self, request: ChatRequest) -> ChatResponse:
         if not self.is_running() or not self._port:

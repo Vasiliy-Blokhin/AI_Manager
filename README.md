@@ -92,6 +92,7 @@ curl -X POST -H "X-API-Password: ваш_пароль" localhost:8000/api/models/
 | `AIM_HF_CACHE` | `~/.cache/ai-manager` | Кэш весов (HF_HOME) |
 | `AIM_AUTO_INSTALL` | `false` | Автоустановка моделей при старте |
 | `AIM_GPU_LAYERS` | `99` | Сколько слоёв выгружать на GPU (`-ngl`) |
+| AIM_PUBLIC_HOST | авто (IP LAN) | Адрес сервиса для других устройств (иначе определяется автоматически) |
 
 ## Графические бэкенды для Arc B580
 
@@ -102,19 +103,63 @@ curl -X POST -H "X-API-Password: ваш_пароль" localhost:8000/api/models/
 - Графическая модель работает через **OpenVINO** (`optimum-intel`), устройство GPU
   выбирается автоматически (Arc).
 
+## Работа из VS Code (Continue) — правки по всему репозиторию
+
+Сервис предоставляет OpenAI-совместимый endpoint `/v1` — его используют
+расширения Continue, Cline, Roo Code и др. Пошаговая инструкция (установка
+Continue, первый запуск, режим Agent для правок по всему репозиторию) —
+в **`docs/CONTINUE.md`**.
+
+Кратко:
+1. Установите Continue в VS Code.
+2. В `~/.continue/config.yaml` добавьте модель: `provider: openai`,
+   `apiBase: http://&lt;IP_сервера&gt;:8000/v1`, `apiKey: пароль из .env`,
+   `model: qwen25-coder-14b-unc` (имя из реестра).
+3. Откройте папку проекта, чат — `Ctrl+L`, инлайн-правки — `Ctrl+I`,
+   правки сразу в нескольких файлах — режим **Agent**.
+
+## Доступ с других устройств локальной сети
+
+По умолчанию сервис слушает все интерфейсы (`AIM_HOST=0.0.0.0`), поэтому с
+другого компьютера/ноутбука в той же сети доступны веб-интерфейс, API и
+endpoint `/v1` для Continue.
+
+1. На сервере **один раз** запустите от имени администратора
+   `scripts\open_firewall.bat` — создаст правило брандмауэра и покажет
+   адреса сервера (например `http://192.168.1.50:8000`).
+2. С другого устройства открывайте этот адрес; пароль — из `.env`.
+3. Внутренний llama-server по-прежнему слушает только `127.0.0.1`: наружу
+   смотрит только AI Manager — единая точка авторизации и контроля.
+
 ## Структура
 
 ```
 ai-manager/
-├── README.md, SPEC.md, requirements.txt, .env.example
-├── config/models.registry.json
-├── scripts/          # setup.bat, run.bat, автозапуск, скачивание llama-server
+├── README.md
+├── SPEC.md
+├── requirements.txt
+├── .env.example
+├── config/
+│   └── models.registry.json
+├── docs/
+│   └── CONTINUE.md
+├── scripts/
+│   ├── setup.bat
+│   ├── run.bat
+│   ├── open_firewall.bat
+│   └── (автозапуск, скачивание llama-server)
 └── app/
-    ├── main.py       # FastAPI: веб + REST API + middleware пароля
-    ├── manager.py    # жизненный цикл, контроль «одна активная модель»
-    ├── registry.py, schemas.py
-    ├── backends/     # base.py, llama_server.py (GGUF+GPU), openvino_sd.py (текст→картинка)
-    └── static/index.html
+    ├── main.py                 # FastAPI: веб + REST API + middleware пароля
+    ├── manager.py              # жизненный цикл, контроль «одна активная модель»
+    ├── registry.py
+    ├── schemas.py
+    ├── openai_proxy.py
+    ├── backends/
+    │   ├── base.py
+    │   ├── llama_server.py     # GGUF+GPU
+    │   └── openvino_sd.py      # текст→картинка
+    └── static/
+        └── index.html
 ```
 
 Подробная спецификация API и форматов — в `SPEC.md`.

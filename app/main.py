@@ -1,19 +1,22 @@
-"""AI Manager Service v2 — FastAPI: веб + REST API + авторизация по паролю (.env)."""
+"""AI Manager Service v2.1 — FastAPI: веб + REST API + OpenAI-прокси (/v1) + авторизация по паролю (.env)."""
 from __future__ import annotations
 
 import hmac
 import os
+import socket
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import ValidationError
 
 from .backends.base import BackendError
 from .manager import (ModelManager, ModelNotFoundError, NotInstalledError,
                       WrongModelTypeError)
+from .openai_proxy import build_openai_router
 from .registry import Registry, RegistryError
 from .schemas import (ChatRequest, ChatResponse, ErrorResponse, ImageRequest,
                       ImageResponse, InstallRequest, InstallResponse, ModelInfo,
@@ -28,6 +31,28 @@ if not PASSWORD:
     raise RuntimeError("Задайте AIM_PASSWORD в файле .env (см. .env.example)")
 
 
+def _lan_ip() -> str:
+    """IP-адрес в локальной сети (UDP-сокет ничего не отправляет — работает офлайн)."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
+
+def _public_origin() -> str:
+    """Базовый URL сервиса, который видят другие устройства (для endpoint/инструкций)."""
+    host = os.getenv("AIM_PUBLIC_HOST", "").strip()
+    if not host:
+        host = os.getenv("AIM_HOST", "127.0.0.1").strip() or "127.0.0.1"
+        if host in ("0.0.0.0", "::"):
+            host = _lan_ip()
+    return f"http://{host}:{os.getenv('AIM_PORT', '8000')}"
+
+
 def _settings() -> dict:
     lo, _, hi = os.getenv("AIM_PORT_RANGE", "8100-8199").partition("-")
     hf_cache = os.path.expandvars(os.getenv("AIM_HF_CACHE", "~/.cache/ai-manager"))
@@ -37,6 +62,7 @@ def _settings() -> dict:
         "hf_cache": hf_cache,
         "port_range": (int(lo), int(hi or lo)),
         "gpu_layers": int(os.getenv("AIM_GPU_LAYERS", "99")),
+        "public_origin": _public_origin(),
     }
 
 
@@ -51,8 +77,6 @@ manager = ModelManager(registry, _settings())
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Проверка наличия установленных ИИ по списку; при AIM_AUTO_INSTALL=true
-    # отсутствующие модели скачиваются и устанавливаются автоматически.
     auto = os.getenv("AIM_AUTO_INSTALL", "false").lower() in ("1", "true", "yes")
     for entry in registry.all():
         try:
@@ -65,19 +89,38 @@ async def lifespan(app: FastAPI):
     manager.shutdown()
 
 
-app = FastAPI(title="AI Manager Service", version="2.0.0", lifespan=lifespan)
+app = FastAPI(title="AI Manager Service", version="2.1.0", lifespan=lifespan)
+
+# CORS: разрешаем обращения из браузерных инструментов к API
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
-# ---------- Авторизация: проверка пароля до обработки эндпоинтов (инвариант I4) ----------
+# ---------- Авторизация (инвариант I4): X-API-Password ИЛИ Bearer <пароль> ----------
+def _provided_password(request: Request) -> str:
+    header = request.headers.get("X-API-Password", "")
+    if header:
+        return header
+    auth = request.headers.get("Authorization", "")
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    return ""
+
+
 @app.middleware("http")
 async def password_middleware(request: Request, call_next):
-    if request.url.path.startswith("/api/"):
-        provided = request.headers.get("X-API-Password", "")
+    if request.url.path.startswith("/api/") or request.url.path.startswith("/v1/"):
+        provided = _provided_password(request)
         if not hmac.compare_digest(provided.encode(), PASSWORD.encode()):
             return JSONResponse(
                 status_code=401,
                 content={"error": {"code": "unauthorized",
-                                   "message": "Неверный или отсутствующий пароль (заголовок X-API-Password)"}},
+                                   "message": "Неверный или отсутствующий пароль "
+                                              "(X-API-Password или Authorization: Bearer)"}},
             )
     return await call_next(request)
 
@@ -133,7 +176,7 @@ def status():
 @app.post("/api/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
     if req.stream:
-        raise _err("unsupported", "stream=true не поддерживается в этой версии", 400)
+        raise _err("unsupported", "stream=true не поддерживается в /api/chat — используйте /v1/chat/completions", 400)
     try:
         return manager.chat(req)
     except RuntimeError as e:
@@ -162,6 +205,10 @@ def image(req: ImageRequest):
         raise _err("backend_error", str(e), 502)
 
 
+# ---------- OpenAI-совместимый прокси (/v1) для Continue и др. ----------
+app.include_router(build_openai_router(manager))
+
+
 # ---------- Веб-интерфейс ----------
 
 @app.get("/")
@@ -169,7 +216,6 @@ def index():
     return FileResponse(BASE_DIR / "static" / "index.html")
 
 
-# Единый формат ошибок {"error": {...}}
 @app.exception_handler(HTTPException)
 async def http_exc_handler(request: Request, exc: HTTPException):
     detail = exc.detail if isinstance(exc.detail, dict) else {"code": "error", "message": str(exc.detail)}

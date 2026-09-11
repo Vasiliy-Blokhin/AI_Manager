@@ -59,7 +59,8 @@ class ModelManager:
                     type=be.model_type,
                     installed=be.is_installed(), running=running,
                     pid=(be._proc.pid if running and getattr(be, "_proc", None) else None),
-                    endpoint=(be._port and f"http://127.0.0.1:{be._port}") if running and be.model_type == "text" else None,
+                    endpoint=(f"{self.settings.get('public_origin', 'http://127.0.0.1:8000')}/v1"
+                        if running and be.model_type == "text" else None),
                 ))
             return infos
 
@@ -139,6 +140,12 @@ class ModelManager:
                 raise WrongModelTypeError("Активна текстовая модель — используйте POST /api/chat")
             return be
 
+    def active_name(self) -> Optional[str]:
+        return self._active
+
+    def active_text_backend(self) -> Backend:
+        return self._active_text_backend()
+    
     def chat(self, request: ChatRequest) -> ChatResponse:
         return self._active_text_backend().chat(request)
 
