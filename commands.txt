@@ -1,0 +1,22 @@
+# список моделей со статусами
+curl -H "X-API-Password: 12345" localhost:8000/api/models
+
+# скачать и установить модель (первый раз — долго, ~9 ГБ)
+curl -X POST -H "X-API-Password: 12345" -H "Content-Type: application/json" \
+     -d '{"name": "qwen25-coder-14b-unc"}' localhost:8000/api/models/install
+
+# запустить (остальные выключатся автоматически)
+curl -X POST -H "X-API-Password: 12345" localhost:8000/api/models/qwen25-coder-14b-unc/start
+
+# текстовый запрос (единый формат для всех текстовых моделей)
+curl -X POST -H "X-API-Password: 12345" -H "Content-Type: application/json" \
+     -d '{"messages":[{"role":"user","content":"hi"}]}' \
+     localhost:8000/api/chat
+
+# генерация изображения (активна графическая модель)
+curl -X POST -H "X-API-Password: 12345" -H "Content-Type: application/json" \
+     -d '{"prompt": "закат над горами, фотореализм", "steps": 25}' \
+     localhost:8000/api/image
+
+# выключить всё
+curl -X POST -H "X-API-Password: 12345" localhost:8000/api/models/stop

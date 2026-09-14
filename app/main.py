@@ -6,7 +6,8 @@ import os
 import socket
 from contextlib import asynccontextmanager
 from pathlib import Path
-
+from typing import Optional
+import time
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,7 +22,7 @@ from .registry import Registry, RegistryError
 from .schemas import (ChatRequest, ChatResponse, ErrorResponse, ImageRequest,
                       ImageResponse, InstallRequest, InstallResponse, ModelInfo,
                       ModelListResponse, StartResponse, StatusResponse,
-                      StopResponse)
+                      StopResponse, ContinueResponse, ContinueRequest)
 
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR.parent / ".env")  # пароль и настройки из .env
@@ -29,6 +30,10 @@ load_dotenv(BASE_DIR.parent / ".env")  # пароль и настройки из
 PASSWORD = os.getenv("AIM_PASSWORD", "")
 if not PASSWORD:
     raise RuntimeError("Задайте AIM_PASSWORD в файле .env (см. .env.example)")
+
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def _lan_ip() -> str:
@@ -101,6 +106,8 @@ app.add_middleware(
 
 
 # ---------- Авторизация (инвариант I4): X-API-Password ИЛИ Bearer <пароль> ----------
+
+
 def _provided_password(request: Request) -> str:
     header = request.headers.get("X-API-Password", "")
     if header:
@@ -120,7 +127,7 @@ async def password_middleware(request: Request, call_next):
                 status_code=401,
                 content={"error": {"code": "unauthorized",
                                    "message": "Неверный или отсутствующий пароль "
-                                              "(X-API-Password или Authorization: Bearer)"}},
+                                              "(X-API-Password или Authorization: Bearer)"}}
             )
     return await call_next(request)
 
@@ -175,10 +182,13 @@ def status():
 
 @app.post("/api/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
+    logger.info(f"Chat request: {req.model_dump_json()}")
     if req.stream:
         raise _err("unsupported", "stream=true не поддерживается в /api/chat — используйте /v1/chat/completions", 400)
     try:
-        return manager.chat(req)
+        logger.info(f"Chat request: {req.model_dump_json()}")
+        response = manager.chat(req)
+        return ChatResponse(model=response.model, backend=response.backend, content=response.content, usage=response.usage)
     except RuntimeError as e:
         if str(e) == "NO_ACTIVE_MODEL":
             raise _err("no_active_model",
@@ -204,7 +214,52 @@ def image(req: ImageRequest):
     except BackendError as e:
         raise _err("backend_error", str(e), 502)
 
-
+# Обработчик POST-запросов на путь /v1/completions
+@app.post("/v1/completions", response_model=ContinueResponse)
+def completions(req: ContinueRequest):
+    try:
+        # Преобразуем запрос в формат, который поддерживает ваш менеджер моделей
+        chat_request = ChatRequest(
+            messages=[{"role": "user", "content": req.prompt}],
+            stream=False,
+            temperature=req.temperature,
+            top_p=req.top_p,
+            max_tokens=req.max_tokens,
+            stop=req.stop
+        )
+        # Получаем ответ от менеджера моделей
+        chat_response = manager.chat(chat_request)
+        # Преобразуем ChatResponse в ContinueResponse
+        continue_response = ContinueResponse(
+            id="cmpl-1234567890",
+            object="text_completion",
+            created=int(time.time()),
+            model=chat_response.model,
+            choices=[{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": chat_response.content
+                },
+                "finish_reason": "stop"
+            }],
+            usage={
+                "prompt_tokens": 10,
+                "completion_tokens": 20,
+                "total_tokens": 30
+            }
+        )
+        return continue_response
+    except RuntimeError as e:
+        if str(e) == "NO_ACTIVE_MODEL":
+            raise _err("no_active_model",
+                       "Нет активной модели. Запустите одну: POST /api/models/{name}/start", 409)
+        raise
+    except WrongModelTypeError as e:
+        raise _err("wrong_model_type", str(e), 409)
+    except BackendError as e:
+        raise _err("backend_error", str(e), 502)
+    
 # ---------- OpenAI-совместимый прокси (/v1) для Continue и др. ----------
 app.include_router(build_openai_router(manager))
 

@@ -1,9 +1,9 @@
 """Единые схемы запросов/ответов (стандартизация для всех ИИ)."""
 from __future__ import annotations
 
-from typing import List, Optional, Literal
+from typing import List, Optional, Literal, Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 
 
 class Message(BaseModel):
@@ -50,6 +50,8 @@ class ChatResponse(BaseModel):
     backend: str
     content: str
     usage: Usage = Field(default_factory=Usage)
+    # response: str  # Assuming this should be a field
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 class ImageResponse(BaseModel):
@@ -107,6 +109,30 @@ class StatusResponse(BaseModel):
     models_total: int = 0
     models_installed: int = 0
     models_running: int = 0
+
+
+# update continue
+
+# Определение модели запроса для continue
+class ContinueRequest(BaseModel):
+    prompt: str
+    max_tokens: int = 16
+    temperature: float = 1.0
+    top_p: float = 1.0
+    stop: Optional[list[str]] = None
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+# Определение модели ответа для continue
+class ContinueResponse(BaseModel):
+    id: str
+    object: str
+    created: int
+    model: str
+    choices: list[dict[str, Any]]
+    usage: dict[str, int]
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 class ErrorBody(BaseModel):

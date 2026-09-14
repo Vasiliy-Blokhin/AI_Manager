@@ -37,16 +37,26 @@ class OpenVinoSdBackend(Backend):
     def start(self) -> StartInfo:
         if not self.is_installed():
             raise BackendError(f"Модель {self.entry.model_ref} не установлена. Сначала выполните install.")
+
+        # 1) Импорты — отдельно, с реальным текстом ошибки (не маскируем под «не установлено»)
         try:
             from optimum.intel import OVStableDiffusionPipeline
+        except ImportError as e:
+            raise BackendError(
+                f"Не установлены зависимости OpenVINO ({e}). "
+                f'Установите в venv сервиса: venv\\Scripts\\python -m pip install "optimum-intel[openvino]" torch')
+
+        # 2) Загрузка пайплайна — отдельно: ImportError здесь — это не «нет пакетов»,
+        #    а конфликт версий/проблема внутри optimum — показываем как есть
+        try:
             pipe = OVStableDiffusionPipeline.from_pretrained(str(self.cache_dir), export=True)
             # Intel Arc: устройство GPU выбирается автоматически
             pipe.to("GPU")
-            self._pipe = pipe
-        except ImportError:
-            raise BackendError("Не установлены зависимости OpenVINO: pip install optimum-intel[openvino] torch")
+        except ImportError as e:
+            raise BackendError(f"Ошибка импорта при загрузке пайплайна (конфликт версий?): {e}")
         except Exception as e:
             raise BackendError(f"Не удалось загрузить пайплайн на GPU: {e}")
+        self._pipe = pipe
         return StartInfo(pid=0, endpoint="in-process")
 
     def stop(self) -> None:
