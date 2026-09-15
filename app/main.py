@@ -35,7 +35,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-
 def _lan_ip() -> str:
     """IP-адрес в локальной сети (UDP-сокет ничего не отправляет — работает офлайн)."""
     try:
@@ -47,7 +46,6 @@ def _lan_ip() -> str:
     except Exception:
         return "127.0.0.1"
 
-
 def _public_origin() -> str:
     """Базовый URL сервиса, который видят другие устройства (для endpoint/инструкций)."""
     host = os.getenv("AIM_PUBLIC_HOST", "").strip()
@@ -56,7 +54,6 @@ def _public_origin() -> str:
         if host in ("0.0.0.0", "::"):
             host = _lan_ip()
     return f"http://{host}:{os.getenv('AIM_PORT', '8000')}"
-
 
 def _settings() -> dict:
     lo, _, hi = os.getenv("AIM_PORT_RANGE", "8100-8199").partition("-")
@@ -70,15 +67,12 @@ def _settings() -> dict:
         "public_origin": _public_origin(),
     }
 
-
 def _err(code: str, msg: str, status: int) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": code, "message": msg})
-
 
 registry = Registry(os.path.expandvars(os.getenv(
     "AIM_REGISTRY", str(BASE_DIR.parent / "config" / "models.registry.json"))))
 manager = ModelManager(registry, _settings())
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -93,7 +87,6 @@ async def lifespan(app: FastAPI):
     yield
     manager.shutdown()
 
-
 app = FastAPI(title="AI Manager Service", version="2.1.0", lifespan=lifespan)
 
 # CORS: разрешаем обращения из браузерных инструментов к API
@@ -104,9 +97,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 # ---------- Авторизация (инвариант I4): X-API-Password ИЛИ Bearer <пароль> ----------
-
 
 def _provided_password(request: Request) -> str:
     header = request.headers.get("X-API-Password", "")
@@ -116,7 +107,6 @@ def _provided_password(request: Request) -> str:
     if auth.lower().startswith("bearer "):
         return auth[7:].strip()
     return ""
-
 
 @app.middleware("http")
 async def password_middleware(request: Request, call_next):
@@ -131,7 +121,6 @@ async def password_middleware(request: Request, call_next):
             )
     return await call_next(request)
 
-
 # ---------- API ----------
 
 @app.get("/api/models", response_model=ModelListResponse)
@@ -139,14 +128,12 @@ def list_models():
     st = manager.status()
     return ModelListResponse(active=st["active"], models=manager.list_models())
 
-
 @app.get("/api/models/{name}", response_model=ModelInfo)
 def get_model(name: str):
     for m in manager.list_models():
         if m.name == name:
             return m
     raise _err("model_not_found", f"Модель '{name}' не найдена в реестре", 404)
-
 
 @app.post("/api/models/install", response_model=InstallResponse)
 def install(req: InstallRequest):
@@ -156,7 +143,6 @@ def install(req: InstallRequest):
         raise _err("model_not_found", f"Модель '{req.name}' не найдена в реестре", 404)
     except BackendError as e:
         raise _err("install_failed", str(e), 502)
-
 
 @app.post("/api/models/{name}/start", response_model=StartResponse)
 def start(name: str):
@@ -169,16 +155,13 @@ def start(name: str):
     except BackendError as e:
         raise _err("start_failed", str(e), 502)
 
-
 @app.post("/api/models/stop", response_model=StopResponse)
 def stop():
     return StopResponse(**manager.stop())
 
-
 @app.get("/api/status", response_model=StatusResponse)
 def status():
     return StatusResponse(**manager.status())
-
 
 @app.post("/api/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
@@ -198,7 +181,6 @@ def chat(req: ChatRequest):
         raise _err("wrong_model_type", str(e), 409)
     except BackendError as e:
         raise _err("backend_error", str(e), 502)
-
 
 @app.post("/api/image", response_model=ImageResponse)
 def image(req: ImageRequest):
@@ -270,12 +252,10 @@ app.include_router(build_openai_router(manager))
 def index():
     return FileResponse(BASE_DIR / "static" / "index.html")
 
-
 @app.exception_handler(HTTPException)
 async def http_exc_handler(request: Request, exc: HTTPException):
     detail = exc.detail if isinstance(exc.detail, dict) else {"code": "error", "message": str(exc.detail)}
     return JSONResponse(status_code=exc.status_code, content={"error": detail})
-
 
 @app.exception_handler(ValidationError)
 async def validation_exc_handler(request: Request, exc: ValidationError):

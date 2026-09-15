@@ -65,6 +65,24 @@ def build_openai_router(manager: ModelManager) -> APIRouter:
                                      media_type="text/event-stream")
         return await run_in_threadpool(_post_json, url, payload)
 
+    @router.get("/code")
+    async def get_code() -> JSONResponse:
+        code = manager.get_code()
+        return JSONResponse({"code": code})
+
+    @router.post("/code")
+    async def save_code(request: Request):
+        try:
+            payload = await request.json()
+        except Exception:
+            raise _err("bad_request", "Невалидный JSON", 400)
+        if not isinstance(payload, dict) or not payload.get("code"):
+            raise _err("bad_request", "Поле code обязательно", 400)
+
+        code = payload.get("code", "")
+        manager.save_code(code)
+        return JSONResponse({"status": "success"})
+
     return router
 
 
@@ -74,7 +92,7 @@ def _post_json(url: str, payload: dict) -> JSONResponse:
         # пробрасываем тело как есть (включая ошибки бэкенда) — совместимость с OpenAI
         return JSONResponse(r.json(), status_code=r.status_code)
     except ValueError:  # не-JSON от бэкенда
-        return JSONResponse({"error": {"code": "backend_error", "message": r.text[:500]}},
+        return JSONResponse({"error": {"code": "backend_error", "message": r.text[:500]}} ,
                             status_code=502)
     except Exception as e:
         raise _err("backend_error", f"Ошибка запроса к модели: {e}", 502)

@@ -11,6 +11,7 @@ from .registry import ModelEntry, Registry
 from .schemas import (ChatRequest, ChatResponse, ImageRequest, ImageResponse,
                       ModelInfo)
 
+
 BACKENDS = {
     LlamaServerBackend.backend_name: LlamaServerBackend,
     OpenVinoSdBackend.backend_name: OpenVinoSdBackend,
@@ -151,6 +152,14 @@ class ModelManager:
 
     def image(self, request: ImageRequest) -> ImageResponse:
         return self._active_image_backend().generate_image(request)
+
+    def save_code(self, code: str) -> None:
+        be = self._active_text_backend()
+        be.save_code(code)
+
+    def get_code(self) -> str:
+        be = self._active_text_backend()
+        return be.get_code()
 
     def _get(self, name: str) -> ModelEntry:
         try:

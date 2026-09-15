@@ -60,3 +60,9 @@ class Backend(abc.ABC):
 
     def generate_image(self, request: ImageRequest) -> ImageResponse:
         raise BackendError(f"Бэкенд {self.backend_name} не поддерживает генерацию изображений")
+
+    def save_code(self, code: str) -> None:
+        raise BackendError(f"Бэкенд {self.backend_name} не поддерживает сохранение кода")
+
+    def get_code(self) -> str:
+        raise BackendError(f"Бэкенд {self.backend_name} не поддерживает получение кода")
