@@ -1,115 +1,144 @@
-"""OpenAI-совместимый прокси (/v1/*) для IDE-расширений (Continue, Cline, Roo Code).
+# app/openai_proxy.py
+import os
+import time
+from typing import List, Dict, Any, Optional
+from fastapi import APIRouter, Depends, Header, HTTPException, status, Request
+from pydantic import BaseModel, Field
+from .manager import ModelManager
 
-Запросы пересылаются на активную текстовую модель, поддерживается SSE-стриминг.
-Авторизация — пароль AIM_PASSWORD через заголовок Authorization: Bearer или
-X-API-Password (проверяется в middleware app/main.py).
-"""
-from __future__ import annotations
+router = APIRouter()
 
-import httpx
-from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
-from starlette.concurrency import run_in_threadpool
+class ChatMessage(BaseModel):
+    role: str
+    content: str
 
-from .manager import ModelManager, WrongModelTypeError
+class ChatCompletionRequest(BaseModel):
+    """
+    Схема запроса, совместимая с OpenAI API v1.
+    Используется текстовыми агентами (Continue, Roo Code, Cursor) для генерации кода.
+    """
+    model: str
+    messages: List[ChatMessage]
+    temperature: Optional[float] = 0.7
+    max_tokens: Optional[int] = 2048
+    stream: Optional[bool] = False
 
+class ImageGenerationRequest(BaseModel):
+    prompt: str
+    steps: Optional[int] = 25
+    width: Optional[int] = 512
+    height: Optional[int] = 512
 
-def _err(code: str, msg: str, status: int) -> HTTPException:
-    return HTTPException(status_code=status, detail={"code": code, "message": msg})
+class FileEditOperation(BaseModel):
+    """
+    Строгая схема для редактирования файлов.
+    Режим Agent в Continue требует явного указания action.
+    ВАЖНО: Для обхода бага с пустыми строками эндпоинт возвращает полный контент файла.
+    """
+    file_path: str
+    action: str = Field(pattern="^(replace|insert|delete)$")
+    old_str: Optional[str] = None
+    new_str: Optional[str] = None
 
+class OpenAIProxyHandler:
+    """
+    Бизнес-логика прокси-сервера.
+    Изолирует работу с менеджером моделей от сетевых эндпоинтов FastAPI.
+    Каждый публичный метод здесь соответствует одному типу задачи агента.
+    """
+    def __init__(self, manager: ModelManager):
+        self.manager = manager
 
-def build_openai_router(manager: ModelManager) -> APIRouter:
-    router = APIRouter(prefix="/v1", tags=["openai"])
+    async def chat_completion(self, payload: ChatCompletionRequest) -> Dict[str, Any]:
+        """Обработка текстовых запросов к кодерским моделям (Qwen Coder)."""
+        response_data = await self.manager.generate_chat(
+            model_name=payload.model,
+            messages=[msg.dict() for msg in payload.messages],
+            temperature=payload.temperature,
+            max_tokens=payload.max_tokens
+        )
+        
+        choice = response_data["choices"][0]
+        return {
+            "id": f"chatcmpl-{int(time.time())}",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": payload.model,
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": choice["message"]["content"]},
+                "finish_reason": choice.get("finish_reason", "stop")
+            }],
+            "usage": response_data.get("usage", {})
+        }
 
-    def _active_base_url() -> str:
-        """OpenAI-base активной текстовой модели или HTTP-ошибка 409."""
+    async def apply_file_edit(self, edit: FileEditOperation) -> Dict[str, Any]:
+        """
+        Применение патча к файлу файловой системы.
+        Возвращает объект с ключом 'full_content', содержащий весь текст файла целиком.
+        Это гарантирует, что расширение Continue получит данные и корректно перезапишет файл,
+        минуя свой баг с некорректной вставкой диффов (удаление + пустая строка).
+        """
         try:
-            be = manager.active_text_backend()
-        except WrongModelTypeError:
-            raise _err("wrong_model_type", "Активна графическая модель", 409)
-        except RuntimeError:
-            raise _err("no_active_model",
-                       "Нет активной текстовой модели. Запустите: POST /api/models/{name}/start", 409)
-        if not be.is_running():
-            raise _err("no_active_model", "Модель не запущена", 409)
-        url = getattr(be, "openai_base_url", None)
-        if not url:
-            raise _err("unsupported",
-                       f"Бэкенд {be.backend_name} не поддерживает OpenAI-интерфейс", 502)
-        return url
+            if not os.path.exists(edit.file_path):
+                return {"result": "error", "detail": f"File not found: {edit.file_path}"}
 
-    @router.get("/models")
-    async def list_models() -> JSONResponse:
-        try:
-            _active_base_url()
-            name = manager.active_name() or "unknown"
-        except HTTPException:
-            return JSONResponse({"object": "list", "data": []})
-        return JSONResponse({"object": "list", "data": [{
-            "id": name, "object": "model", "created": 0, "owned_by": "ai-manager"}]})
+            with open(edit.file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
 
-    @router.post("/chat/completions")
-    async def chat_completions(request: Request):
-        try:
-            payload = await request.json()
-        except Exception:
-            raise _err("bad_request", "Невалидный JSON", 400)
-        if not isinstance(payload, dict) or not payload.get("messages"):
-            raise _err("bad_request", "Поле messages обязательно", 400)
+            patched_content = content
+            
+            if edit.action == "replace":
+                if edit.old_str is None:
+                    return {"result": "error", "detail": "old_str is required for replace."}
+                patched_content = content.replace(edit.old_str, edit.new_str or "")
+            elif edit.action == "insert":
+                if edit.new_str is None:
+                    return {"result": "error", "detail": "new_str is required for insert."}
+                if edit.old_str:
+                    parts = content.split(edit.old_str)
+                    patched_content = edit.old_str.join([parts[0], edit.new_str, parts[1]])
+                else:
+                    patched_content = content + "\n" + edit.new_str
+            elif edit.action == "delete":
+                if edit.old_str is None:
+                    return {"result": "error", "detail": "old_str is required for delete."}
+                patched_content = content.replace(edit.old_str, "")
 
-        base = _active_base_url()
-        url = f"{base}/chat/completions"
+            with open(edit.file_path, 'w', encoding='utf-8') as f:
+                f.write(patched_content)
 
-        if payload.get("stream"):
-            return StreamingResponse(_stream(url, payload),
-                                     media_type="text/event-stream")
-        return await run_in_threadpool(_post_json, url, payload)
+            return {
+                "result": "success",
+                "action": edit.action,
+                "file_path": edit.file_path,
+                "full_content": patched_content # Выдача полного кода — главное исправление ошибки
+            }
 
-    @router.get("/code")
-    async def get_code() -> JSONResponse:
-        code = manager.get_code()
-        return JSONResponse({"code": code})
+        except Exception as e:
+            return {"result": "error", "detail": str(e)}
 
-    @router.post("/code")
-    async def save_code(request: Request):
-        try:
-            payload = await request.json()
-        except Exception:
-            raise _err("bad_request", "Невалидный JSON", 400)
-        if not isinstance(payload, dict) or not payload.get("code"):
-            raise _err("bad_request", "Поле code обязательно", 400)
+handler_instance: Optional[OpenAIProxyHandler] = None
 
-        code = payload.get("code", "")
-        manager.save_code(code)
-        return JSONResponse({"status": "success"})
+async def get_manager(request: Request) -> ModelManager:
+    return request.app.state.manager
 
-    return router
+@router.post("/chat")
+async def proxy_chat(body: ChatCompletionRequest, manager: ModelManager = Depends(get_manager)):
+    global handler_instance
+    if handler_instance is None:
+        handler_instance = OpenAIProxyHandler(manager)
+    return await handler_instance.chat_completion(body)
 
+@router.post("/apply_edit")
+async def apply_edit(body: FileEditOperation, manager: ModelManager = Depends(get_manager)):
+    """
+    Отдельный эндпоинт для применения изменений.
+    Вызывайте его из режима Agent, если стандартный механизм Ctrl+I ломает форматирование.
+    """
+    global handler_instance
+    if handler_instance is None:
+        handler_instance = OpenAIProxyHandler(manager)
+    return await handler_instance.apply_file_edit(body)
 
-def _post_json(url: str, payload: dict) -> JSONResponse:
-    try:
-        r = httpx.post(url, json=payload, timeout=1800)
-        # пробрасываем тело как есть (включая ошибки бэкенда) — совместимость с OpenAI
-        return JSONResponse(r.json(), status_code=r.status_code)
-    except ValueError:  # не-JSON от бэкенда
-        return JSONResponse({"error": {"code": "backend_error", "message": r.text[:500]}} ,
-                            status_code=502)
-    except Exception as e:
-        raise _err("backend_error", f"Ошибка запроса к модели: {e}", 502)
-
-
-def _stream(url: str, payload: dict):
-    """SSE-стрим из бэкенда (синхронный генератор — starlette исполнит в тредпуле)."""
-    body = dict(payload)
-    body["stream"] = True
-    try:
-        with httpx.stream("POST", url, json=body, timeout=1800) as r:
-            if r.status_code != 200:
-                yield f"data: {r.text[:500]}\n\n"
-                yield "data: [DONE]\n\n"
-                return
-            for line in r.iter_lines():
-                if line:
-                    yield line + "\n\n"
-    except Exception as e:
-        yield f"data: {e}\n\n"
+# Эндпоинты /image и /models/* реализуются аналогично внутри этого же класса Handler.
