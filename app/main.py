@@ -1,6 +1,7 @@
 """AI Manager Service v2.1 — FastAPI: веб + REST API + OpenAI-прокси (/v1) + авторизация по паролю (.env)."""
 from __future__ import annotations
 
+import subprocess
 import hmac
 import os
 import socket
@@ -241,7 +242,15 @@ def completions(req: ContinueRequest):
         raise _err("wrong_model_type", str(e), 409)
     except BackendError as e:
         raise _err("backend_error", str(e), 502)
-    
+
+
+@app.post("/restart")
+async def restart_service():
+    """Endpoint для перезапуска сервиса."""
+    subprocess.run(["git", "pull"])
+    subprocess.run(["scripts/restart.bat"])
+    return {"message": "Service is restarting"}
+
 # ---------- OpenAI-совместимый прокси (/v1) для Continue и др. ----------
 app.include_router(build_openai_router(manager))
 
