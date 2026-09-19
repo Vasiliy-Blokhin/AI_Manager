@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul
-REM ==== Запуск AI Manager (с авто-перезапуском при падении) ====
+REM ==== Запуск AI Manager (с авто-перезапуском при падении) ==== 
 REM Хост/порт читаются из .env (AIM_HOST/AIM_PORT), по умолчанию 0.0.0.0:8000.
 cd /d "%~dp0.."
 if not exist .env ( echo Нет файла .env — сначала выполните scripts\setup.bat & pause & exit /b 1 )

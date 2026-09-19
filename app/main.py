@@ -5,6 +5,7 @@ from fastapi import FastAPI, Request, HTTPException, status, Depends, Header
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+import subprocess
 
 from .manager import ModelManager
 from .openai_proxy import openai_router
@@ -77,3 +78,11 @@ app.include_router(openai_router, prefix="/v1", dependencies=[Depends(verify_pas
 async def health_check():
     """Endpoint для проверки доступности сервиса (используется Docker/K8s Health Check)."""
     return {"status": "ok"}
+
+
+@app.post("/restart", dependencies=[Depends(verify_password)])
+async def restart_service():
+    """Endpoint для перезапуска сервиса."""
+    subprocess.run(["git", "pull"])
+    subprocess.run(["scripts/restart.bat"])
+    return {"message": "Service is restarting"}
