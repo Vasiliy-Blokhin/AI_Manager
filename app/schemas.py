@@ -109,31 +109,7 @@ class StatusResponse(BaseModel):
     models_total: int = 0
     models_installed: int = 0
     models_running: int = 0
-
-
-# update continue
-
-# Определение модели запроса для continue
-class ContinueRequest(BaseModel):
-    prompt: str
-    max_tokens: int = 16
-    temperature: float = 1.0
-    top_p: float = 1.0
-    stop: Optional[list[str]] = None
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-# Определение модели ответа для continue
-class ContinueResponse(BaseModel):
-    id: str
-    object: str
-    created: int
-    model: str
-    choices: list[dict[str, Any]]
-    usage: dict[str, int]
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
+    
 
 class ErrorBody(BaseModel):
     code: str

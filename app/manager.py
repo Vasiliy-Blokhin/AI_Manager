@@ -210,31 +210,10 @@ class ModelManager:
         """
         Обрабатывает запрос чата через активный текстовый бэкенд.
 
-        :param request: запрос чата
-        :return: ответ чата
+        Сообщения передаются модели БЕЗ изменений. Инструкции по формату
+        правок задаются на стороне клиента (Continue config.yaml) — их
+        подмена здесь ломала применение правок в VS Code.
         """
-        sample = '''<START TEMPLATE>
---- a/path/to/file.py
-+++ b/path/to/file.py
-@@ -10,7 +10,7 @@ class MyClass:
--    def old_method(self):
--        pass
-+    async def new_method(self):
-+        """Новая реализация с поддержкой await."""
-+        await some_async_call()\n<END TEMPLATE>\n<END Additional instruction>\n
-        ''' 
-        add_content = '\n!VERY IMPORTANT! To generate code within the ' \
-            '<START EDITING HERE> ... <END EDITING HERE> blocks, use the diff ' \
-            'method based on the template below DO NOT WRITE CODE IN ANY OTHER ' \
-            'WAY (including copying the file content directly; use only the ' \
-            'diff). It is forbidden to modify any code outside the <START EDITING ' \
-            'HERE> ... <END EDITING HERE> construct. Do not forget to add line ' \
-            'breaks. It is forbidden to return anything else—such as text, commentary, ' \
-            'or the like; return ONLY the corrected code in diff format, following ' \
-            'this template: \n'
-        add_content += sample
-        request.messages[0].content = add_content + request.messages[0].content
-        print(f'request - {request.messages[0].content}')
         return self._active_text_backend().chat(request)
 
     def image(self, request: ImageRequest) -> ImageResponse:
@@ -246,26 +225,6 @@ class ModelManager:
         """
         return self._active_image_backend().generate_image(request)
 
-    def save_code(self, new_code: str) -> None:
-        """
-        Сохраняет код, **добавляя его к существующему** (вместо полной перезаписи).
-        Это устраняет проблему замены кода пустой строкой.
-
-        :param new_code: фрагмент кода для добавления
-        """
-        be = self._active_text_backend()
-        current_code = be.get_code()
-        updated_code = f"{current_code}\n{new_code}"  # Добавляем в конец
-        be.save_code(updated_code)
-
-    def get_code(self) -> str:
-        """
-        Получает сохранённый код из активного текстового бэкенда.
-
-        :return: код
-        """
-        be = self._active_text_backend()
-        return be.get_code()
 
     def _get(self, name: str) -> ModelEntry:
         """

@@ -1,14 +1,17 @@
-"""AI Manager Service v2.1 — FastAPI: веб + REST API + OpenAI-прокси (/v1) + авторизация по паролю (.env)."""
+"""AI Manager Service v2.2 — FastAPI: веб + REST API + OpenAI-прокси (/v1) + авторизация по паролю (.env)."""
 from __future__ import annotations
 
-import subprocess
-import hmac
 import os
+import sys
+import hmac
 import socket
+import signal
+import subprocess
+import threading
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional
-import time
+
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,21 +26,21 @@ from .registry import Registry, RegistryError
 from .schemas import (ChatRequest, ChatResponse, ErrorResponse, ImageRequest,
                       ImageResponse, InstallRequest, InstallResponse, ModelInfo,
                       ModelListResponse, StartResponse, StatusResponse,
-                      StopResponse, ContinueResponse, ContinueRequest)
+                      StopResponse)
 
 BASE_DIR = Path(__file__).resolve().parent
-load_dotenv(BASE_DIR.parent / ".env")  # пароль и настройки из .env
+PROJECT_ROOT = BASE_DIR.parent
+load_dotenv(PROJECT_ROOT / ".env")
 
 PASSWORD = os.getenv("AIM_PASSWORD", "")
 if not PASSWORD:
     raise RuntimeError("Задайте AIM_PASSWORD в файле .env (см. .env.example)")
 
 import logging
-
 logger = logging.getLogger(__name__)
 
+
 def _lan_ip() -> str:
-    """IP-адрес в локальной сети (UDP-сокет ничего не отправляет — работает офлайн)."""
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
@@ -47,14 +50,15 @@ def _lan_ip() -> str:
     except Exception:
         return "127.0.0.1"
 
+
 def _public_origin() -> str:
-    """Базовый URL сервиса, который видят другие устройства (для endpoint/инструкций)."""
     host = os.getenv("AIM_PUBLIC_HOST", "").strip()
     if not host:
         host = os.getenv("AIM_HOST", "127.0.0.1").strip() or "127.0.0.1"
         if host in ("0.0.0.0", "::"):
             host = _lan_ip()
     return f"http://{host}:{os.getenv('AIM_PORT', '8000')}"
+
 
 def _settings() -> dict:
     lo, _, hi = os.getenv("AIM_PORT_RANGE", "8100-8199").partition("-")
@@ -68,12 +72,15 @@ def _settings() -> dict:
         "public_origin": _public_origin(),
     }
 
+
 def _err(code: str, msg: str, status: int) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": code, "message": msg})
 
+
 registry = Registry(os.path.expandvars(os.getenv(
-    "AIM_REGISTRY", str(BASE_DIR.parent / "config" / "models.registry.json"))))
+    "AIM_REGISTRY", str(PROJECT_ROOT / "config" / "models.registry.json"))))
 manager = ModelManager(registry, _settings())
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -88,9 +95,9 @@ async def lifespan(app: FastAPI):
     yield
     manager.shutdown()
 
-app = FastAPI(title="AI Manager Service", version="2.1.0", lifespan=lifespan)
 
-# CORS: разрешаем обращения из браузерных инструментов к API
+app = FastAPI(title="AI Manager Service", version="2.2.0", lifespan=lifespan)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -98,7 +105,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------- Авторизация (инвариант I4): X-API-Password ИЛИ Bearer <пароль> ----------
 
 def _provided_password(request: Request) -> str:
     header = request.headers.get("X-API-Password", "")
@@ -108,6 +114,7 @@ def _provided_password(request: Request) -> str:
     if auth.lower().startswith("bearer "):
         return auth[7:].strip()
     return ""
+
 
 @app.middleware("http")
 async def password_middleware(request: Request, call_next):
@@ -122,6 +129,7 @@ async def password_middleware(request: Request, call_next):
             )
     return await call_next(request)
 
+
 # ---------- API ----------
 
 @app.get("/api/models", response_model=ModelListResponse)
@@ -129,12 +137,14 @@ def list_models():
     st = manager.status()
     return ModelListResponse(active=st["active"], models=manager.list_models())
 
+
 @app.get("/api/models/{name}", response_model=ModelInfo)
 def get_model(name: str):
     for m in manager.list_models():
         if m.name == name:
             return m
     raise _err("model_not_found", f"Модель '{name}' не найдена в реестре", 404)
+
 
 @app.post("/api/models/install", response_model=InstallResponse)
 def install(req: InstallRequest):
@@ -144,6 +154,7 @@ def install(req: InstallRequest):
         raise _err("model_not_found", f"Модель '{req.name}' не найдена в реестре", 404)
     except BackendError as e:
         raise _err("install_failed", str(e), 502)
+
 
 @app.post("/api/models/{name}/start", response_model=StartResponse)
 def start(name: str):
@@ -156,23 +167,25 @@ def start(name: str):
     except BackendError as e:
         raise _err("start_failed", str(e), 502)
 
+
 @app.post("/api/models/stop", response_model=StopResponse)
 def stop():
     return StopResponse(**manager.stop())
+
 
 @app.get("/api/status", response_model=StatusResponse)
 def status():
     return StatusResponse(**manager.status())
 
+
 @app.post("/api/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
-    logger.info(f"Chat request: {req.model_dump_json()}")
     if req.stream:
         raise _err("unsupported", "stream=true не поддерживается в /api/chat — используйте /v1/chat/completions", 400)
     try:
-        logger.info(f"Chat request: {req.model_dump_json()}")
         response = manager.chat(req)
-        return ChatResponse(model=response.model, backend=response.backend, content=response.content, usage=response.usage)
+        return ChatResponse(model=response.model, backend=response.backend,
+                            content=response.content, usage=response.usage)
     except RuntimeError as e:
         if str(e) == "NO_ACTIVE_MODEL":
             raise _err("no_active_model",
@@ -182,6 +195,7 @@ def chat(req: ChatRequest):
         raise _err("wrong_model_type", str(e), 409)
     except BackendError as e:
         raise _err("backend_error", str(e), 502)
+
 
 @app.post("/api/image", response_model=ImageResponse)
 def image(req: ImageRequest):
@@ -197,74 +211,57 @@ def image(req: ImageRequest):
     except BackendError as e:
         raise _err("backend_error", str(e), 502)
 
-# Обработчик POST-запросов на путь /v1/completions
-@app.post("/v1/completions", response_model=ContinueResponse)
-def completions(req: ContinueRequest):
+
+# ---------- Перезапуск: git pull + рестарт ТОЛЬКО этого процесса ----------
+
+@app.post("/api/restart")
+def restart_service():
+    """
+    git pull + перезапуск сервиса. Перезапускается только процесс AI Manager
+    (по PID текущего процесса) — другие Python-процессы не затрагиваются.
+    """
+    result = {"git": None, "restarting": True}
+
     try:
-        # Преобразуем запрос в формат, который поддерживает ваш менеджер моделей
-        chat_request = ChatRequest(
-            messages=[{"role": "user", "content": req.prompt}],
-            stream=False,
-            temperature=req.temperature,
-            top_p=req.top_p,
-            max_tokens=req.max_tokens,
-            stop=req.stop
+        p = subprocess.run(
+            ["git", "pull", "--ff-only"],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True, text=True, timeout=120,
         )
-        # Получаем ответ от менеджера моделей
-        chat_response = manager.chat(chat_request)
-        # Преобразуем ChatResponse в ContinueResponse
-        continue_response = ContinueResponse(
-            id="cmpl-1234567890",
-            object="text_completion",
-            created=int(time.time()),
-            model=chat_response.model,
-            choices=[{
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": chat_response.content
-                },
-                "finish_reason": "stop"
-            }],
-            usage={
-                "prompt_tokens": 10,
-                "completion_tokens": 20,
-                "total_tokens": 30
-            }
-        )
-        return continue_response
-    except RuntimeError as e:
-        if str(e) == "NO_ACTIVE_MODEL":
-            raise _err("no_active_model",
-                       "Нет активной модели. Запустите одну: POST /api/models/{name}/start", 409)
-        raise
-    except WrongModelTypeError as e:
-        raise _err("wrong_model_type", str(e), 409)
-    except BackendError as e:
-        raise _err("backend_error", str(e), 502)
+        result["git"] = {
+            "ok": p.returncode == 0,
+            "output": (p.stdout + p.stderr).strip()[-500:],
+        }
+    except Exception as e:
+        result["git"] = {"ok": False, "output": str(e)}
+
+    def _delayed_restart():
+        time.sleep(1.5)
+        logger.info("Перезапуск AI Manager (PID %s)...", os.getpid())
+        if hasattr(signal, "SIGTERM"):
+            os.kill(os.getpid(), signal.SIGTERM)
+        else:
+            os._exit(1)
+
+    threading.Thread(target=_delayed_restart, daemon=True).start()
+    return result
 
 
-@app.post("/restart")
-async def restart_service():
-    """Endpoint для перезапуска сервиса."""
-    subprocess.run(["git", "pull"])
-    subprocess.run(["scripts/restart.bat"])
-    return {"message": "Service is restarting"}
+# ---------- OpenAI-совместимый прокси (/v1) ----------
 
-# ---------- OpenAI-совместимый прокси (/v1) для Continue и др. ----------
 app.include_router(build_openai_router(manager))
 
-
-# ---------- Веб-интерфейс ----------
 
 @app.get("/")
 def index():
     return FileResponse(BASE_DIR / "static" / "index.html")
 
+
 @app.exception_handler(HTTPException)
 async def http_exc_handler(request: Request, exc: HTTPException):
     detail = exc.detail if isinstance(exc.detail, dict) else {"code": "error", "message": str(exc.detail)}
     return JSONResponse(status_code=exc.status_code, content={"error": detail})
+
 
 @app.exception_handler(ValidationError)
 async def validation_exc_handler(request: Request, exc: ValidationError):

@@ -100,29 +100,7 @@ def build_openai_router(manager: ModelManager) -> APIRouter:
             return StreamingResponse(_stream(url, payload), media_type="text/event-stream")
         
         return await run_in_threadpool(_post_json, url, payload)
-
-    @router.get("/code")
-    async def get_code() -> JSONResponse:
-        """Получение накопленного кода из активного бэкенда."""
-        code = manager.get_code()
-        return JSONResponse({"code": code})
-
-    @router.post("/code")
-    async def save_code(request: Request):
-        """Сохранение фрагмента кода (добавление к существующему)."""
-        try:
-            payload = await request.json()
-        except Exception:
-            raise _err("bad_request", "Invalid JSON body.", 400)
-        if not isinstance(payload, dict) or not payload.get("code"):
-            raise _err("bad_request", "Field 'code' is required.", 400)
-
-        code = payload.get("code", "")
-        manager.save_code(code)
-        return JSONResponse({"status": "success"})
-
-    return router
-
+    
 
 def _post_json(url: str, payload: dict) -> JSONResponse:
     """Синхронный POST-запрос к llama-server/compatible backend."""

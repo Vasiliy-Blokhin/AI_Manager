@@ -1,144 +1,35 @@
-# Подключение VS Code (расширение Continue) к AI Manager
+# Настройка Continue для AI Manager
 
-## Что получится
+## 1. Установка Continue в VS Code
 
-- Чат с кодерской моделью прямо в VS Code (`Ctrl+L`), инлайн-правки (`Ctrl+I`).
-- **Режим Agent** — правки сразу во многих файлах открытого репозитория
-  (ищет файлы сам, показывает изменения диффами, вы принимаете/отклоняете).
-- Работает с **любого компьютера в локальной сети**: модель исполняется на
-  машине с AI Manager, VS Code только шлёт запросы по HTTP.
+Расширение: `Continue` (id: `Continue.continue`)
 
-## Шаг 0. Подготовка сервера (машина с AI Manager)
+## 2. Настройка config.yaml
 
-1. Выполните установку из README (`scripts\setup.bat`), задайте пароль `AIM_PASSWORD` в `.env`.
-2. Убедитесь, что в `.env` стоит `AIM_HOST=0.0.0.0` (значение по умолчанию).
-3. **Один раз** запустите от имени администратора: `scripts\open_firewall.bat`.
-   Он откроет порт в брандмауэре и напечатает адреса, например `http://192.168.1.50:8000`.
-   Запишите этот адрес — он понадобится на клиентских машинах.
-4. Запустите сервис: `scripts\run.bat`.
-5. Установите и запустите кодерскую модель:
-   - веб-интерфейс: откройте `http://&lt;адрес&gt;:8000`, введите пароль,
-     у модели `qwen25-coder-14b-unc` нажмите «Установить», затем «Запустить»;
-   - или через curl (см. раздел «Быстрый старт (API)» в README).
-
-## Шаг 1. Установка Continue (на рабочем компьютере)
-
-1. Откройте VS Code → Extensions (Ctrl+Shift+X) → найдите **Continue** → Install.
-2. Перезагрузите VS Code.
-
-## Шаг 2. Настройка подключения
-
-Continue хранит конфиг в файле `config.yaml` (новые версии) или `config.json`
-(старые) в папке пользователя `.continue` в домашней директории.
-
-**Важно:**
-- `apiBase` — адрес из шага 0 (3) плюс `/v1`.
-- `apiKey` — пароль `AIM_PASSWORD` из `.env` сервера.
-- `model` должно совпадать с именем модели в `config/models.registry.json`
-  сервиса. Активна всегда одна модель — какую выбрали в Continue, та и
-  обслуживается (перед переключением запустите нужную на сервере).
-
-### Вариант A. config.yaml
+Файл: `%USERPROFILE%\.continue\config.yaml`
 
 ```yaml
-name: AI Manager
+name: AI Manager Local
 version: 1.0.0
 schema: v1
+
 models:
-  - name: Qwen2.5-Coder (AI Manager)
+  - name: Qwen2.5 Coder 14B (Local)
     provider: openai
     model: qwen25-coder-14b-unc
-    apiBase: http://192.168.1.50:8000/v1
-    apiKey: ваш_пароль
-    defaultCompletionOptions:
-      temperature: 0.2
-      maxTokens: 4096
-    roles:
-      - chat
-      - edit
-      - apply
-  - name: Qwen2.5-14B RU (AI Manager)
-    provider: openai
-    model: qwen25-14b-unc-russian
-    apiBase: http://192.168.1.50:8000/v1
-    apiKey: ваш_пароль
-    roles:
-      - chat
+    apiBase: http://127.0.0.1:8000/v1
+    apiKey: ваш_пароль_из_.env
+    useLegacyCompletionsEndpoint: false
+    # ВАЖНО: не используйте /v1/completions — только /v1/chat/completions
+
 context:
   - provider: code
   - provider: docs
-```
 
-### Вариант B. config.json (старые версии Continue)
-
-```json
-{
-  "models": [
-    {
-      "title": "Qwen2.5-Coder (AI Manager)",
-      "provider": "openai",
-      "model": "qwen25-coder-14b-unc",
-      "apiBase": "http://192.168.1.50:8000/v1",
-      "apiKey": "ваш_пароль"
-    },
-    {
-      "title": "Qwen2.5-14B RU (AI Manager)",
-      "provider": "openai",
-      "model": "qwen25-14b-unc-russian",
-      "apiBase": "http://192.168.1.50:8000/v1",
-      "apiKey": "ваш_пароль"
-    }
-  ]
-}
-```
-
-Сохраните файл. Continue подхватит изменения автоматически (или нажмите
-«Reload» в шестерёнке панели Continue).
-
-## Шаг 3. Проверка связи
-
-1. Откройте панель Continue (`Ctrl+L`), вверху выберите модель
-   «Qwen2.5-Coder (AI Manager)».
-2. Отправьте тестовый запрос, например: «напиши на Python функцию Фибоначчи».
-
-Ошибки и их причины:
-
-| Симптом | Причина |
-|---|---|
-| `401 unauthorized` | неверный `apiKey` (пароль из `.env`) |
-| `409 no_active_model` | на сервере не запущена текстовая модель — нажмите «Запустить» в веб-интерфейсе |
-| не соединяется / таймаут | брандмауэр (запустите `scripts\open_firewall.bat`), неверный IP, сервис не запущен |
-| очень долгий первый ответ | модель только загружается в VRAM (~1–2 мин) |
-
-## Шаг 4. Первое редактирование кода
-
-1. Откройте папку проекта: File → Open Folder (именно папку — тогда Continue
-   видит весь репозиторий).
-2. **Инлайн-правка:** выделите код → `Ctrl+I` → опишите изменение
-   («перепиши с обработкой ошибок», «добавь type hints») → Enter →
-   смотрите дифф → Accept (или Reject).
-3. **Правки по всему репозиторию (Agent):** переключите режим в «Agent»
-   (внизу панели чата) и опишите задачу целиком, например:
-   «пройдись по всем файлам в папке src и замени print на logging» или
-   «добавь docstring всем публичным функциям проекта». Агент сам найдёт
-   файлы, предложит изменения диффами по одному файлу — просматривайте и
-   подтверждайте.
-4. **Контекст вручную:** в поле ввода чата наберите `@Code`, `@Files` или
-   `@Folder`, чтобы прикрепить конкретные файлы/папки.
-5. **Автодополнение по Tab:** на 14B-модели работает медленно — при желании
-   отключите его в настройках Continue (Tab Autocomplete), оставив только
-   чат и правки.
-
-## Смена модели
-
-Активна всегда одна модель (ограничение VRAM). Чтобы переключиться с
-кодерской на текстовую или обратно: запустите нужную модель на сервере
-(веб-интерфейс `http://&lt;адрес&gt;:8000` или `POST /api/models/{name}/start`),
-подождите ~1–2 минуты загрузки весов и просто выберите другую модель в Continue.
-
-## Безопасность
-
-- Пароль даёт полный доступ к API — храните его в секрете. Внутри домашней
-  сети это обычно достаточно.
-- Трафик идёт по HTTP и не шифруется — не выставляйте порт наружу в интернет.
-  Для доступа извне LAN используйте VPN.
+# Системный промпт для режима агента — задаёт правила применения правок
+systemMessage: |
+  You are an expert software engineer.
+  When editing files, you MUST use the apply_diff tool with unified diff format.
+  NEVER output the entire file content — only the diff.
+  Always include enough context lines (3+) for unique matching.
+  Use create_new_file tool only for new files.
