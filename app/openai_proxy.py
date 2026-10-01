@@ -110,7 +110,8 @@ def build_openai_router(manager: ModelManager) -> APIRouter:
 def _post_json(url: str, payload: dict) -> JSONResponse:
     """Синхронный POST-запрос к llama-server/compatible backend."""
     try:
-        r = httpx.post(url, json=payload, timeout=1800)
+        # Увеличиваем таймаут для более надежной работы
+        r = httpx.post(url, json=payload, timeout=httpx.Timeout(1800.0, connect=30.0))
         # Пробрасываем тело как есть (включая ошибки бэкенда) — совместимость с OpenAI
         return JSONResponse(r.json(), status_code=r.status_code)
     except ValueError:  # не-JSON от бэкенда
@@ -129,7 +130,8 @@ def _stream(url: str, payload: dict):
     body = dict(payload)
     body["stream"] = True
     try:
-        with httpx.stream("POST", url, json=body, timeout=1800) as r:
+        # Увеличиваем таймаут для более надежной работы
+        with httpx.stream("POST", url, json=body, timeout=httpx.Timeout(1800.0, connect=30.0)) as r:
             if r.status_code != 200:
                 yield f"data: {r.text[:500]}\n\n"
                 yield "data: [DONE]\n\n"
