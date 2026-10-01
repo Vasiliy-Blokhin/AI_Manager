@@ -111,7 +111,7 @@ def _post_json(url: str, payload: dict) -> JSONResponse:
     """Синхронный POST-запрос к llama-server/compatible backend."""
     try:
         # Увеличиваем таймаут для более надежной работы
-        r = httpx.post(url, json=payload, timeout=httpx.Timeout(1800.0, connect=30.0))
+        r = httpx.post(url, json=payload)
         # Пробрасываем тело как есть (включая ошибки бэкенда) — совместимость с OpenAI
         return JSONResponse(r.json(), status_code=r.status_code)
     except ValueError:  # не-JSON от бэкенда
