@@ -10,6 +10,15 @@
       "context": 16384
     },
     {
+      "name": "qwen3-coder-30b-a3b-instruct",
+      "backend": "llama_server",
+      "model_ref": "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Qwen3-Coder-30B-A3B-Instruct-UD-Q4_K_XL.gguf",
+      "display_name": "Qwen3-Coder-30B-A3B-Instruct",
+      "description": "Код: Python/JS (MoE 30B/3.3B active)",
+      "ngl": 99,
+      "context": 100000
+    },
+    {
       "name": "qwen25-14b-unc-russian",
       "backend": "llama_server",
       "model_ref": "bartowski/Qwen2.5-14B_Uncensored_Instruct-GGUF:Qwen2.5-14B_Uncensored_Instruct-Q4_K_M.gguf",
@@ -27,3 +36,4 @@
     }
   ]
 }
+ 

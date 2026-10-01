@@ -88,19 +88,24 @@ def build_openai_router(manager: ModelManager) -> APIRouter:
     async def chat_completions(request: Request):
         """Проксирование чата."""
         try:
-            payload = await request.json()
-        except Exception:
-            raise _err("bad_request", "Invalid JSON body.", 400)
-        if not isinstance(payload, dict) or not payload.get("messages"):
-            raise _err("bad_request", "Field 'messages' is required.", 400)
+            try:
+                payload = await request.json()
+            except Exception:
+                raise _err("bad_request", "Invalid JSON body.", 400)
+            if not isinstance(payload, dict) or not payload.get("messages"):
+                raise _err("bad_request", "Field 'messages' is required.", 400)
 
-        base = _active_base_url()
-        url = f"{base}/chat/completions"
-        if payload.get("stream"):
-            return StreamingResponse(_stream(url, payload), media_type="text/event-stream")
-        
-        return await run_in_threadpool(_post_json, url, payload)
-    
+            base = _active_base_url()
+            url = f"{base}/chat/completions"
+            if payload.get("stream"):
+                return StreamingResponse(_stream(url, payload), media_type="text/event-stream")
+            
+            return await run_in_threadpool(_post_json, url, payload)
+        except Exception as e:
+            print(e)
+            raise Exception(e)
+
+    return router
 
 def _post_json(url: str, payload: dict) -> JSONResponse:
     """Синхронный POST-запрос к llama-server/compatible backend."""
