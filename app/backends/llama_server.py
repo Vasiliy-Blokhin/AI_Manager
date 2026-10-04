@@ -176,12 +176,13 @@ class LlamaServerBackend(Backend):
             "messages": [m.model_dump() for m in request.messages],
             "temperature": request.temperature,
             "stream": False,
+            "cache_prompt": True
         }
         if request.max_tokens:
             payload["max_tokens"] = request.max_tokens
         try:
             r = httpx.post(f"http://127.0.0.1:{self._port}/v1/chat/completions",
-                           json=payload, timeout=1800)
+                           json=payload, timeout=None)
             r.raise_for_status()
             data = r.json()
         except httpx.HTTPStatusError as e:

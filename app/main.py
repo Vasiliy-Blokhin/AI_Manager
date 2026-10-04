@@ -15,7 +15,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from .backends.base import BackendError
@@ -250,12 +250,6 @@ def restart_service():
 # ---------- OpenAI-совместимый прокси (/v1) ----------
 
 app.include_router(build_openai_router(manager))
-
-
-@app.get("/")
-def index():
-    return FileResponse(BASE_DIR / "static" / "index.html")
-
 
 @app.exception_handler(HTTPException)
 async def http_exc_handler(request: Request, exc: HTTPException):
