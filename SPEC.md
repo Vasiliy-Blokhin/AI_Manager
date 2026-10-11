@@ -58,8 +58,35 @@
 | `name` | да | Уникальный идентификатор модели в сервисе |
 | `backend` | да | `llama_server` (текст, GGUF) или `openvino_sd` (картинки) |
 | `model_ref` | да | llama_server: `repo:file` на HuggingFace; openvino_sd: `repo_id` |
-| `ngl` | нет | Число слоёв на GPU (`-ngl`, по умолчанию `AIM_GPU_LAYERS`=99) |
+| `ngl` | нет | Число слоёв на GPU (`-ngl`, по умолчанию `AIM_GPU_LAYERS`=99). `null` — не передавать, llama-server сам подгонит выгрузку под свободную VRAM (`--fit`) |
 | `context` | нет | Размер контекста (`-c`, по умолчанию 16384) |
+| `parallel` | нет | Число слотов (`-np`, по умолчанию 1: весь контекст и кэш промпта — одному пользователю) |
+| `n_cpu_moe` | нет | MoE-эксперты первых N слоёв держать на CPU (`--n-cpu-moe`) |
+| `flash_attn` | нет | `on` / `off` / `auto` (`-fa`) |
+| `args` | нет | Дополнительные аргументы llama-server (список строк) |
+| `env` | нет | Переменные окружения процесса llama-server (поверх `.env`) |
+| `request_defaults` | нет | Параметры, подставляемые в каждый запрос `/v1/chat/completions` и `/api/chat`, если клиент их не задал (например `reasoning_effort`) |
+
+Пример оптимизированной записи (gpt-oss-20b на Arc B580 без Resizable BAR):
+
+```json
+{
+  "name": "gpt-oss-20b", "backend": "llama_server",
+  "model_ref": "unsloth/gpt-oss-20b-GGUF:gpt-oss-20b-UD-Q4_K_XL.gguf",
+  "ngl": null, "context": 32768, "parallel": 1, "flash_attn": "on",
+  "args": ["-ub", "2048", "-b", "2048", "--load-mode", "none", "--jinja"],
+  "env": {"GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM": "1"},
+  "request_defaults": {"reasoning_effort": "low"}
+}
+```
+
+Замеры на этой машине (Ryzen 5 5500, Arc B580, Vulkan; промпт 24.5k токенов):
+
+| Конфигурация | Prefill, ток/с | Генерация, ток/с |
+|---|---|---|
+| Было: `-ngl 99 -c 100000`, 4 слота | 30–36 | 1–4 (VRAM переполнена) |
+| `--fit`, 32k, 1 слот | 36 | 23 |
+| + `GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM=1`, `-ub 2048` | **810** (до 1680 на коротком контексте) | **28–34** |
 
 ## 3. Авторизация
 
@@ -183,11 +210,22 @@
 
 Сервис предоставляет OpenAI-совместимые эндпоинты:
 
-- **GET /v1/models** — возвращает список доступных текстовых моделей
-- **POST /v1/chat/completions** — запрос к активной текстовой модели
-  (поддерживает параметр `stream=true` с SSE-стримингом)
+- **GET /v1/models** — все установленные текстовые модели (`active: true` у запущенной)
+- **POST /v1/chat/completions** — запрос к текстовой модели
+  (поддерживает параметр `stream=true` с SSE-стримингом, инструменты `tools`)
 
-При отсутствии активной текстовой модели возвращается код `409`.
+Поведение (`AIM_AUTOSTART=true`, по умолчанию):
+
+- если поле `model` — установленная текстовая модель из реестра, она запускается
+  автоматически (остальные останавливаются, I1); неизвестные имена игнорируются;
+- если процесс llama-server активной модели упал — он перезапускается при следующем запросе;
+- параметры `request_defaults` модели подставляются, если клиент их не передал;
+  `cache_prompt=true` по умолчанию;
+- стрим пробрасывается без изменений; обрыв соединения клиентом сразу отменяет
+  генерацию в llama-server;
+- assistant-сообщения с `tool_calls` и сообщения `tool` не отбрасываются, даже с пустым `content`.
+
+При отсутствии активной текстовой модели (и `AIM_AUTOSTART=false`) возвращается код `409`.
 
 ## 5. Бэкенды
 
@@ -196,7 +234,9 @@
 - Установка: `hf_hub_download(repo:file)` в `AIM_HF_CACHE/<name>/`.
 - Проверка: наличие файла весов.
 - Запуск: `llama-server -m <веса> --host 127.0.0.1 --port <AIM_PORT_RANGE>
-  -ngl <ngl> -c <context>`; health-check `GET /health` (таймаут 10 мин).
+  -c <context> -np <parallel> --alias <name> [-ngl <ngl>] [--n-cpu-moe N] [-fa ..] <args>`;
+  health-check `GET /health` (таймаут 10 мин). Команда запуска пишется в лог
+  `logs/llama-server-<name>.log`.
 - Остановка: `SIGTERM` → через 15 с `kill`; освобождает VRAM (инвариант I1).
 - Запрос: `POST /v1/chat/completions` (OpenAI-совместимый).
 - GPU: сборки `win-vulkan-x64` (по умолчанию) или `win-sycl-x64` (нужен oneAPI),

@@ -8,6 +8,7 @@ Windows, без Docker — запуск из консоли / автозапус
 | # | Назначение | Модель | Бэкенд | Размер в VRAM |
 |---|---|---|---|---|
 | 1 | Код (Python, JS) | Qwen2.5-Coder-14B-Instruct-abliterated (Q4_K_M) | llama.cpp (Vulkan/SYCL, 100% GPU) | ~9 ГБ |
+| 1a | Код / агент (основная для local_code_worker) | GPT-OSS-20B (MoE, UD-Q4_K_XL) | llama.cpp (Vulkan, авто-подбор GPU/CPU) | ~11 ГБ |
 | 2 | Текст (русский) | Qwen2.5-14B_Uncensored_Instruct (Q4_K_M) | llama.cpp (Vulkan/SYCL, 100% GPU) | ~9 ГБ |
 | 3 | Графика (текст→изображение) | DreamShaper 8 (SD 1.5) | OpenVINO (GPU) | ~4 ГБ |
 
@@ -91,8 +92,25 @@ curl -X POST -H "X-API-Password: ваш_пароль" localhost:8000/api/models/
 | `AIM_PORT_RANGE` | `8100-8199` | Порты для llama-server |
 | `AIM_HF_CACHE` | `~/.cache/ai-manager` | Кэш весов (HF_HOME) |
 | `AIM_AUTO_INSTALL` | `false` | Автоустановка моделей при старте |
-| `AIM_GPU_LAYERS` | `99` | Сколько слоёв выгружать на GPU (`-ngl`) |
+| `AIM_GPU_LAYERS` | `99` | Сколько слоёв выгружать на GPU (`-ngl`), если в реестре не задано |
+| `AIM_AUTOSTART` | `true` | Запускать модель из поля `model` запроса `/v1`, перезапускать упавший llama-server |
+| `GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM` | `1` | Обход выключенного Resizable BAR на Arc (см. ниже) |
 | AIM_PUBLIC_HOST | авто (IP LAN) | Адрес сервиса для других устройств (иначе определяется автоматически) |
+
+## Производительность на Arc B580: Resizable BAR
+
+На этой машине **Resizable BAR выключен** (BAR-окно видеокарты 256 МБ вместо ~12 ГБ).
+Intel Arc без ReBAR работает в разы медленнее: prefill gpt-oss-20b падал до ~36 ток/с.
+Программный обход — `GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM=1` (в `.env` и в реестре
+gpt-oss-20b): prefill 800–1700 ток/с, генерация 28–34 ток/с.
+
+Лучшее решение — включить в BIOS **Above 4G Decoding** и **Re-Size BAR Support**
+(для Ryzen 5000 нужна свежая прошивка платы; Windows должна быть установлена в режиме UEFI).
+Проверка: Intel Graphics Software → «Resizable BAR: Enabled». После включения обход
+можно оставить или убрать — сравните скорость.
+
+Реестр gpt-oss-20b настроен на `ngl: null` (llama-server сам решает, сколько
+MoE-экспертов держать на CPU, чтобы всё влезло в VRAM), 32k контекста, 1 слот — см. `SPEC.md`.
 
 ## Графические бэкенды для Arc B580
 
@@ -102,6 +120,11 @@ curl -X POST -H "X-API-Password: ваш_пароль" localhost:8000/api/models/
   Intel oneAPI Base Toolkit; укажите путь в `LLAMA_SERVER_BIN`.
 - Графическая модель работает через **OpenVINO** (`optimum-intel`), устройство GPU
   выбирается автоматически (Arc).
+
+## Агент для кода в браузере — local_code_worker
+
+Соседний проект `local_code_worker` — веб-агент по мотивам Claude Code поверх этого
+сервиса (модель gpt-oss-20b, запускается автоматически). См. его README.
 
 ## Работа из VS Code (Continue) — правки по всему репозиторию
 

@@ -69,6 +69,8 @@ def _settings() -> dict:
         "hf_cache": hf_cache,
         "port_range": (int(lo), int(hi or lo)),
         "gpu_layers": int(os.getenv("AIM_GPU_LAYERS", "99")),
+        # Авто-запуск модели из поля "model" запроса и перезапуск упавшего llama-server
+        "autostart": os.getenv("AIM_AUTOSTART", "true").lower() in ("1", "true", "yes"),
         "public_origin": _public_origin(),
     }
 
