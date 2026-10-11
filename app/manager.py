@@ -198,6 +198,36 @@ class ModelManager:
                 raise WrongModelTypeError("Активна текстовая модель — используйте POST /api/chat")
             return be
 
+    def text_backend_for(self, requested: Optional[str] = None, autostart: bool = True) -> Backend:
+        """
+        Бэкенд для текстового запроса с «самовосстановлением».
+
+        - requested — имя модели из запроса (поле model). Если это установленная
+          текстовая модель из реестра и она не активна — при autostart она
+          запускается (остальные останавливаются, инвариант I1).
+        - Если активная модель упала (процесс завершился / не отвечает /health) —
+          при autostart она перезапускается.
+        Неизвестные имена моделей (IDE часто шлют своё) игнорируются — используется активная.
+        """
+        with self._lock:
+            target = self._active
+            if autostart and requested and requested != self._active:
+                try:
+                    entry = self.registry.get(requested)
+                except KeyError:
+                    entry = None
+                if entry is not None:
+                    be = self._backend_for(entry)
+                    if be.model_type == "text" and be.is_installed():
+                        target = requested
+            if autostart and target:
+                be = self._backend_for(self._get(target))
+                if be.model_type == "text" and (target != self._active or not be.is_running()):
+                    if target == self._active:
+                        self._active = None  # упавший процесс: start() поднимет заново
+                    self.start(target)
+            return self._active_text_backend()
+
     def active_name(self) -> Optional[str]:
         """
         Возвращает имя активной модели (или None, если нет).
@@ -214,7 +244,7 @@ class ModelManager:
         правок задаются на стороне клиента (Continue config.yaml) — их
         подмена здесь ломала применение правок в VS Code.
         """
-        return self._active_text_backend().chat(request)
+        return self.text_backend_for(None, self.settings.get("autostart", True)).chat(request)
 
     def image(self, request: ImageRequest) -> ImageResponse:
         """

@@ -27,10 +27,20 @@ class LlamaServerBackend(Backend):
         self.bin = settings.get("llama_server_bin", "llama-server")
         self.cache_dir = Path(os.path.expandvars(settings.get("hf_cache", "~/.cache/ai-manager"))).expanduser() / entry.name
         self.port_range = settings.get("port_range", (8100, 8199))
-        self.gpu_layers = int(entry.extra.get("ngl", settings.get("gpu_layers", 99)))
+        ngl = entry.extra.get("ngl", settings.get("gpu_layers", 99))
+        # ngl = null в реестре → не передаём -ngl, llama-server сам подгоняет под VRAM (--fit)
+        self.gpu_layers: Optional[int] = None if ngl is None else int(ngl)
         self.context = int(entry.extra.get("context", 16384))
+        self.n_cpu_moe = entry.extra.get("n_cpu_moe")          # MoE-эксперты первых N слоёв — на CPU
+        self.parallel = int(entry.extra.get("parallel", 1))   # 1 слот: весь контекст одному пользователю
+        self.flash_attn = entry.extra.get("flash_attn")        # "on" | "off" | "auto"
+        self.extra_args = [str(a) for a in entry.extra.get("args", [])]
+        self.extra_env = {k: str(v) for k, v in entry.extra.get("env", {}).items()}
+        # Параметры, подставляемые в каждый запрос, если клиент их не задал (reasoning_effort и т.п.)
+        self.request_defaults: dict = dict(entry.extra.get("request_defaults", {}))
         self._proc: Optional[subprocess.Popen] = None
         self._port: Optional[int] = None
+        self._log_path: Optional[Path] = None
 
     # --- файлы ---
     def _weights_path(self) -> Path:
@@ -107,15 +117,28 @@ class LlamaServerBackend(Backend):
         logs_dir = project_dir / "logs"
         logs_dir.mkdir(exist_ok=True)
         log_path = logs_dir / f"llama-server-{self.entry.name}.log"
+        self._log_path = log_path
 
         cmd = [str(bin_path), "-m", str(self._weights_path()),
                "--host", "127.0.0.1", "--port", str(port),
-               "-ngl", str(self.gpu_layers),     # все слои на GPU (Intel Arc)
-               "-c", str(self.context)]
+               "-c", str(self.context),
+               "-np", str(self.parallel),
+               "--alias", self.entry.name,
+               "--no-webui"]
+        if self.gpu_layers is not None:
+            cmd += ["-ngl", str(self.gpu_layers)]
+        if self.n_cpu_moe:
+            cmd += ["--n-cpu-moe", str(int(self.n_cpu_moe))]
+        if self.flash_attn:
+            cmd += ["-fa", str(self.flash_attn)]
+        cmd += self.extra_args
+        env = {**os.environ, **self.extra_env}
         try:
-            # env наследуется: ONEAPI_DEVICE_SELECTOR и др. берутся из .env/системы
+            # env наследуется: ONEAPI_DEVICE_SELECTOR и др. берутся из .env/системы,
+            # поверх — переменные из реестра (например, обходы для Vulkan на Intel Arc)
             log = open(log_path, "ab", buffering=0)
-            self._proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT)
+            log.write(f"\n==== {time.strftime('%Y-%m-%d %H:%M:%S')} {' '.join(cmd)}\n".encode())
+            self._proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, env=env)
         except FileNotFoundError as e:
             if getattr(e, "winerror", None) == 2:
                 raise BackendError(
@@ -153,8 +176,12 @@ class LlamaServerBackend(Backend):
         self._proc = None
         self._port = None
 
+    def process_alive(self) -> bool:
+        """Дешёвая проверка без HTTP: процесс жив и порт назначен."""
+        return bool(self._proc and self._proc.poll() is None and self._port)
+
     def is_running(self) -> bool:
-        if not self._proc or self._proc.poll() is not None or not self._port:
+        if not self.process_alive():
             return False
         try:
             return httpx.get(f"http://127.0.0.1:{self._port}/health", timeout=5).status_code == 200
@@ -173,6 +200,7 @@ class LlamaServerBackend(Backend):
         if not self.is_running() or not self._port:
             raise BackendError("Модель не запущена")
         payload = {
+            **self.request_defaults,
             "messages": [m.model_dump() for m in request.messages],
             "temperature": request.temperature,
             "stream": False,

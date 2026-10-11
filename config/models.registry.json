@@ -19,6 +19,33 @@
       "context": 100000
     },
     {
+      "name": "gpt-oss-20b",
+      "backend": "llama_server",
+      "model_ref": "unsloth/gpt-oss-20b-GGUF:gpt-oss-20b-UD-Q4_K_XL.gguf",
+      "display_name": "GPT-OSS-20B",
+      "description": "Код/агент: MoE 20.9B/3.6B active, reasoning. Основная модель local_code_worker",
+      "ngl": null,
+      "context": 32768,
+      "parallel": 1,
+      "flash_attn": "on",
+      "args": [
+        "-ub",
+        "2048",
+        "-b",
+        "2048",
+        "--load-mode",
+        "none",
+        "--jinja"
+      ],
+      "env": {
+        "GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM": "1"
+      },
+      "request_defaults": {
+        "reasoning_effort": "low"
+      },
+      "_comment": "ngl=null: llama-server сам подбирает выгрузку под VRAM (--fit, часть MoE-экспертов на CPU). DISABLE_HOST_VISIBLE_VIDMEM — обход выключенного Resizable BAR: prefill 36 -> ~800-1600 ток/с. ub=2048 — быстрый prefill. 1 слот — весь контекст одному пользователю, кэш промпта не вытесняется."
+    },
+    {
       "name": "qwen25-14b-unc-russian",
       "backend": "llama_server",
       "model_ref": "bartowski/Qwen2.5-14B_Uncensored_Instruct-GGUF:Qwen2.5-14B_Uncensored_Instruct-Q4_K_M.gguf",
@@ -36,4 +63,3 @@
     }
   ]
 }
- 
