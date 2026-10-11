@@ -5,14 +5,17 @@ from typing import Dict, List, Optional
 
 from .backends.base import Backend, BackendError
 from .backends.llama_server import LlamaServerBackend
+from .backends.llama_tts import LlamaTtsBackend
 from .backends.openvino_sd import OpenVinoSdBackend
 from .registry import ModelEntry, Registry
-from .schemas import ChatRequest, ChatResponse, ImageRequest, ImageResponse, ModelInfo
+from .schemas import (ChatRequest, ChatResponse, ImageRequest, ImageResponse, ModelInfo,
+                      TTSRequest, TTSResponse)
 
 
 BACKENDS = {
     LlamaServerBackend.backend_name: LlamaServerBackend,
     OpenVinoSdBackend.backend_name: OpenVinoSdBackend,
+    LlamaTtsBackend.backend_name: LlamaTtsBackend,
 }
 
 
@@ -47,6 +50,7 @@ class ModelManager:
         self._lock = threading.RLock()  # блокировка для потокобезопасности
         self._backends: Dict[str, Backend] = {}  # кэш инициализированных бэкендов
         self._active: Optional[str] = None  # имя активной модели (или None)
+        self._install_locks: Dict[str, threading.Lock] = {}  # по одной загрузке на модель
 
     def _backend_for(self, entry: ModelEntry) -> Backend:
         """
@@ -106,13 +110,22 @@ class ModelManager:
         }
 
     def install(self, name: str) -> dict:
+        """
+        Скачивает модель. Загрузка идёт БЕЗ общей блокировки: пока качаются десятки ГБ,
+        остальные запросы (статус, чат, генерация) обслуживаются как обычно.
+        Повторная установка той же модели параллельно не запускается.
+        """
         with self._lock:
             entry = self._get(name)
             be = self._backend_for(entry)
             was = be.is_installed()
-            if not was:
+            if was:
+                return {"name": name, "installed": True, "was_installed": True}
+            install_lock = self._install_locks.setdefault(name, threading.Lock())
+        with install_lock:
+            if not be.is_installed():
                 be.install()
-            return {"name": name, "installed": be.is_installed(), "was_installed": was}
+        return {"name": name, "installed": be.is_installed(), "was_installed": was}
 
     def start(self, name: str) -> dict:
         """
@@ -186,16 +199,27 @@ class ModelManager:
 
         :return: бэкенд активной графической модели
         :raises RuntimeError: если нет активной модели
-        :raises WrongModelTypeError: если активна текстовая модель
+        :raises WrongModelTypeError: если активна модель другого типа
         """
+        return self._active_backend_of("image")
+
+    def _active_backend_of(self, model_type: str) -> Backend:
+        """
+        Возвращает активный бэкенд заданного типа (image / audio).
+
+        :raises RuntimeError: если нет активной модели
+        :raises WrongModelTypeError: если активна модель другого типа
+        """
+        endpoints = {"text": "/api/chat", "image": "/api/image", "audio": "/api/tts"}
         with self._lock:
             if not self._active:
                 raise RuntimeError("NO_ACTIVE_MODEL")
             be = self._backends.get(self._active)
             if be is None or not be.is_running():
                 raise RuntimeError("NO_ACTIVE_MODEL")
-            if be.model_type != "image":
-                raise WrongModelTypeError("Активна текстовая модель — используйте POST /api/chat")
+            if be.model_type != model_type:
+                raise WrongModelTypeError(
+                    f"Активна модель типа '{be.model_type}' — используйте POST {endpoints[be.model_type]}")
             return be
 
     def text_backend_for(self, requested: Optional[str] = None, autostart: bool = True) -> Backend:
@@ -254,6 +278,15 @@ class ModelManager:
         :return: результат генерации
         """
         return self._active_image_backend().generate_image(request)
+
+    def tts(self, request: TTSRequest) -> TTSResponse:
+        """
+        Синтезирует речь через активную TTS-модель.
+
+        :param request: запрос синтеза речи
+        :return: WAV в base64
+        """
+        return self._active_backend_of("audio").synthesize(request)
 
 
     def _get(self, name: str) -> ModelEntry:

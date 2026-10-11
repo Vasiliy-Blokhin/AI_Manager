@@ -46,6 +46,36 @@
       "_comment": "ngl=null: llama-server сам подбирает выгрузку под VRAM (--fit, часть MoE-экспертов на CPU). DISABLE_HOST_VISIBLE_VIDMEM — обход выключенного Resizable BAR: prefill 36 -> ~800-1600 ток/с. ub=2048 — быстрый prefill. 1 слот — весь контекст одному пользователю, кэш промпта не вытесняется."
     },
     {
+      "name": "qwen36-35b-a3b",
+      "backend": "llama_server",
+      "model_ref": "unsloth/Qwen3.6-35B-A3B-GGUF:Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+      "display_name": "Qwen3.6-35B-A3B",
+      "description": "Текст (лучший русский): статьи, посты, сценарии. MoE 35B/3B active",
+      "ngl": null,
+      "context": 32768,
+      "parallel": 1,
+      "flash_attn": "on",
+      "args": [
+        "-ub",
+        "2048",
+        "-b",
+        "2048",
+        "--jinja"
+      ],
+      "env": {
+        "GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM": "1"
+      },
+      "request_defaults": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "top_p": 0.8,
+        "top_k": 20,
+        "presence_penalty": 1.0
+      },
+      "_comment": "ngl=null (--fit): часть MoE-экспертов на CPU, ~22 ГБ весов = 12 ГБ VRAM + RAM. enable_thinking=false — для генерации контента рассуждения не нужны, параметры сэмплинга — рекомендованные Qwen для non-thinking."
+    },
+    {
       "name": "qwen25-14b-unc-russian",
       "backend": "llama_server",
       "model_ref": "bartowski/Qwen2.5-14B_Uncensored_Instruct-GGUF:Qwen2.5-14B_Uncensored_Instruct-Q4_K_M.gguf",
@@ -60,6 +90,65 @@
       "model_ref": "Lykon/dreamshaper-8",
       "display_name": "DreamShaper 8",
       "description": "Генерация изображений по запросу (SD 1.5)"
+    },
+    {
+      "name": "flux1-schnell-ov",
+      "backend": "openvino_sd",
+      "model_ref": "OpenVINO/FLUX.1-schnell-int8-ov",
+      "display_name": "FLUX.1-schnell INT8 (CPU)",
+      "description": "Изображения высшего качества, но только на CPU (~6 мин/кадр 640px): в 12 ГБ VRAM не помещается. Для обложек/аватарок",
+      "default_steps": 4,
+      "default_guidance": 0.0,
+      "max_side": 1536,
+      "devices": {
+        "text_encoder": "CPU",
+        "denoise": "CPU",
+        "vae": "CPU"
+      }
+    },
+    {
+      "name": "qwen3-tts",
+      "backend": "llama_tts",
+      "model_ref": "ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF:Qwen3-TTS-12Hz-1.7B-Base-bf16.gguf",
+      "mmproj": "mmproj-Qwen3-TTS-12Hz-1.7B-Base-bf16.gguf",
+      "display_name": "Qwen3-TTS 1.7B",
+      "description": "Синтез речи (ru/en и др.), клонирование голоса по образцу. Apache 2.0",
+      "ngl": 99,
+      "env": {
+        "GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM": "1"
+      }
+    },
+    {
+      "name": "flux1-schnell-int4-ov",
+      "backend": "openvino_sd",
+      "model_ref": "OpenVINO/FLUX.1-schnell-int4-ov",
+      "display_name": "FLUX.1-schnell INT4 (GPU)",
+      "description": "Изображения для конвейера: трансформер 6.4 ГБ на GPU, T5 на CPU. Apache 2.0",
+      "devices": {
+        "text_encoder": "CPU",
+        "denoise": "GPU",
+        "vae": "GPU"
+      },
+      "default_steps": 4,
+      "default_guidance": 0.0,
+      "max_side": 1536
+    },
+    {
+      "name": "sdxl-base-int8-ov",
+      "backend": "openvino_sd",
+      "model_ref": "OpenVINO/stable-diffusion-xl-base-1.0-int8-ov",
+      "display_name": "SDXL 1.0 INT8 (GPU, VAE на CPU)",
+      "description": "Основная модель картинок без Resizable BAR: ~30 с/кадр 1344×768. VAE на CPU — иначе fp16 даёт чёрный кадр",
+      "default_steps": 30,
+      "default_guidance": 6.0,
+      "max_side": 1536,
+      "engine": "genai",
+      "devices": {
+        "text_encoder": "GPU",
+        "denoise": "GPU",
+        "vae": "CPU"
+      },
+      "_comment": "FLUX на Arc B580 без ReBAR не работает: fp16 даёт шум, f32 — 25+ мин/кадр; на CPU — 8 мин/кадр"
     }
   ]
 }

@@ -15,7 +15,7 @@ from huggingface_hub import hf_hub_download
 
 from ..registry import ModelEntry
 from ..schemas import ChatRequest, ChatResponse, Usage
-from .base import Backend, BackendError, StartInfo
+from .base import Backend, BackendError, StartInfo, download_with_retries
 
 
 class LlamaServerBackend(Backend):
@@ -57,10 +57,9 @@ class LlamaServerBackend(Backend):
         if not repo or not fname:
             raise BackendError(f"Неверный model_ref: {self.entry.model_ref}")
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            hf_hub_download(repo_id=repo, filename=fname, local_dir=str(self.cache_dir))
-        except Exception as e:
-            raise BackendError(f"Не удалось скачать веса: {e}")
+        download_with_retries(
+            lambda: hf_hub_download(repo_id=repo, filename=fname, local_dir=str(self.cache_dir)),
+            f"{repo}/{fname}")
 
     # --- поиск бинарника ---
     def _resolve_bin(self) -> Path:

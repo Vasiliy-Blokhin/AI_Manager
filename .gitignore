@@ -219,3 +219,6 @@ __marimo__/
 
 llama-server/
 *llama-server*
+# Образцы голоса — личные данные, в репозиторий не попадают
+voices/*
+!voices/.gitkeep

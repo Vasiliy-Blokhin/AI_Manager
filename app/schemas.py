@@ -27,15 +27,29 @@ class ImageRequest(BaseModel):
     width: int = 512
     height: int = 512
     seed: Optional[int] = None
+    # None — значение по умолчанию модели (FLUX.1-schnell: 0.0, SD/SDXL: 7.5)
+    guidance_scale: Optional[float] = Field(default=None, ge=0.0, le=30.0)
 
     @field_validator("width", "height")
     @classmethod
     def _multiple_of_64(cls, v: int) -> int:
         if v % 64 != 0:
             raise ValueError("width/height должны быть кратны 64")
-        if not 256 <= v <= 1024:
-            raise ValueError("width/height должны быть в диапазоне 256..1024")
+        if not 256 <= v <= 1536:
+            raise ValueError("width/height должны быть в диапазоне 256..1536")
         return v
+
+
+class TTSRequest(BaseModel):
+    """Стандартизированный запрос синтеза речи."""
+    text: str = Field(min_length=1, max_length=4000)
+    language: str = "ru"
+    # Имя файла-образца голоса из папки voices/ (wav/mp3, 5–15 с) — клонирование голоса.
+    # None — голос модели по умолчанию.
+    speaker: Optional[str] = None
+    temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
+    # Сид сэмплирования: другой сид — другой «дубль» той же фразы (для перегенерации неудачных)
+    seed: Optional[int] = Field(default=None, ge=0)
 
 
 class Usage(BaseModel):
@@ -65,12 +79,21 @@ class ImageResponse(BaseModel):
     image_base64: str
 
 
+class TTSResponse(BaseModel):
+    """Стандартизированный ответ синтеза речи (WAV в base64)."""
+    model: str
+    backend: str
+    format: Literal["wav"] = "wav"
+    duration_sec: float = 0.0
+    audio_base64: str
+
+
 class ModelInfo(BaseModel):
     name: str
     backend: str
     display_name: str = ""
     description: str = ""
-    type: Literal["text", "image"] = "text"
+    type: Literal["text", "image", "audio"] = "text"
     installed: bool = False
     running: bool = False
     pid: Optional[int] = None
