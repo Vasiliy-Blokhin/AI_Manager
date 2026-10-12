@@ -38,6 +38,7 @@ class OpenVinoSdBackend(Backend):
         super().__init__(entry, settings)
         self.cache_dir = Path(settings.get("hf_cache", "~/.cache/ai-manager")).expanduser() / entry.name
         self._pipe = None
+        self._i2i = None   # Image2ImagePipeline (genai): режим «картинка → картинка»
         self._engine = None
 
     # --- установка ---
@@ -73,13 +74,16 @@ class OpenVinoSdBackend(Backend):
             raise BackendError(f"Не установлен openvino-genai ({e}): venv\\Scripts\\python -m pip install openvino-genai")
         devices = {"text_encoder": "GPU", "denoise": "GPU", "vae": "GPU", **self.entry.extra.get("devices", {})}
         try:
-            pipe = ov_genai.Text2ImagePipeline(str(self.cache_dir))
+            # Один набор скомпилированных моделей на два режима: Image2Image компилируется,
+            # Text2Image создаётся поверх него (общие веса — SDXL в памяти один раз)
+            i2i = ov_genai.Image2ImagePipeline(str(self.cache_dir))
             # Кэш скомпилированных ядер GPU: первая генерация каждого размера иначе длится 15+ минут
             ov_cache = Path(os.path.expandvars(self.settings.get("hf_cache", "~/.cache/ai-manager"))).expanduser() \
                 .parent / "ov-cache"
             ov_cache.mkdir(parents=True, exist_ok=True)
-            pipe.compile(devices["text_encoder"], devices["denoise"], devices["vae"], CACHE_DIR=str(ov_cache))
-            return pipe
+            i2i.compile(devices["text_encoder"], devices["denoise"], devices["vae"], CACHE_DIR=str(ov_cache))
+            self._i2i = i2i
+            return ov_genai.Text2ImagePipeline(i2i)
         except Exception as e:
             raise BackendError(f"Не удалось загрузить пайплайн (genai, {devices}): {e}")
 
@@ -101,6 +105,7 @@ class OpenVinoSdBackend(Backend):
 
     def stop(self) -> None:
         self._pipe = None
+        self._i2i = None
         self._engine = None
         gc.collect()  # освобождение VRAM (инвариант I1)
 
@@ -146,7 +151,23 @@ class OpenVinoSdBackend(Backend):
             kwargs["guidance_scale"] = float(guidance)
         if request.negative_prompt and "flux" not in self.entry.model_ref.lower():
             kwargs["negative_prompt"] = request.negative_prompt
-        tensor = self._pipe.generate(request.prompt, **kwargs)
+        if request.init_image_base64:
+            if self._i2i is None:
+                raise BackendError("Режим «картинка → картинка» доступен только для движка genai")
+            import openvino as ov
+            import numpy as np
+            src = Image.open(io.BytesIO(base64.b64decode(request.init_image_base64))).convert("RGB")
+            # обрезка по центру под целевые пропорции и размер
+            w, h = request.width, request.height
+            scale = max(w / src.width, h / src.height)
+            src = src.resize((max(w, round(src.width * scale)), max(h, round(src.height * scale))), Image.LANCZOS)
+            left, top = (src.width - w) // 2, (src.height - h) // 2
+            src = src.crop((left, top, left + w, top + h))
+            kwargs.pop("width"), kwargs.pop("height")
+            tensor = self._i2i.generate(request.prompt, ov.Tensor(np.array(src, dtype=np.uint8)[None]),
+                                        strength=float(request.strength), **kwargs)
+        else:
+            tensor = self._pipe.generate(request.prompt, **kwargs)
         return Image.fromarray(tensor.data[0])
 
     def _generate_optimum(self, request: ImageRequest, guidance):

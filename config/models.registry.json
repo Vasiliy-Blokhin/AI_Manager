@@ -50,7 +50,7 @@
       "backend": "llama_server",
       "model_ref": "unsloth/Qwen3.6-35B-A3B-GGUF:Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
       "display_name": "Qwen3.6-35B-A3B",
-      "description": "Текст (лучший русский): статьи, посты, сценарии. MoE 35B/3B active",
+      "description": "Текст (лучший русский): статьи, посты, сценарии. MoE 35B/3B active. «Зрение» (mmproj): анализ изображений через /v1/chat/completions (image_url)",
       "ngl": null,
       "context": 32768,
       "parallel": 1,
@@ -73,7 +73,8 @@
         "top_k": 20,
         "presence_penalty": 1.0
       },
-      "_comment": "ngl=null (--fit): часть MoE-экспертов на CPU, ~22 ГБ весов = 12 ГБ VRAM + RAM. enable_thinking=false — для генерации контента рассуждения не нужны, параметры сэмплинга — рекомендованные Qwen для non-thinking."
+      "_comment": "ngl=null (--fit): часть MoE-экспертов на CPU, ~22 ГБ весов = 12 ГБ VRAM + RAM. enable_thinking=false — для генерации контента рассуждения не нужны, параметры сэмплинга — рекомендованные Qwen для non-thinking.",
+      "mmproj": "mmproj-F16.gguf"
     },
     {
       "name": "qwen25-14b-unc-russian",
