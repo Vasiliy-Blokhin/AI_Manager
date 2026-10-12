@@ -14,6 +14,9 @@ class Message(BaseModel):
 class ChatRequest(BaseModel):
     """Стандартизированный текстовый запрос к любой текстовой модели."""
     messages: List[Message]
+    # Имя модели из реестра: запустится сама, когда до задачи дойдёт очередь.
+    # None — текущая активная модель.
+    model: Optional[str] = None
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: Optional[int] = Field(default=None, ge=1)
     stream: bool = False
@@ -22,6 +25,7 @@ class ChatRequest(BaseModel):
 class ImageRequest(BaseModel):
     """Стандартизированный запрос генерации изображения."""
     prompt: str = Field(min_length=1)
+    model: Optional[str] = None  # None — активная графическая модель
     negative_prompt: str = ""
     steps: int = Field(default=25, ge=1, le=150)
     width: int = 512
@@ -43,6 +47,7 @@ class ImageRequest(BaseModel):
 class TTSRequest(BaseModel):
     """Стандартизированный запрос синтеза речи."""
     text: str = Field(min_length=1, max_length=4000)
+    model: Optional[str] = None  # None — активная TTS-модель
     language: str = "ru"
     # Имя файла-образца голоса из папки voices/ (wav/mp3, 5–15 с) — клонирование голоса.
     # None — голос модели по умолчанию.
@@ -132,7 +137,10 @@ class StatusResponse(BaseModel):
     models_total: int = 0
     models_installed: int = 0
     models_running: int = 0
-    
+    queue_running: int = 0
+    queue_waiting: int = 0
+    switch_locked: bool = False  # по текущей модели есть задачи — переключение запрещено
+
 
 class ErrorBody(BaseModel):
     code: str

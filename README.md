@@ -17,6 +17,12 @@ Windows, без Docker — запуск из консоли / автозапус
 
 Активна всегда не более одной модели; запуск модели автоматически выгружает остальные.
 
+**Очередь задач.** Каждый запрос к модели — задача в SQLite (`data/ai_manager.db`) с проектом,
+статусом и временем. Модель не переключается, пока по ней есть задачи; запросы к другим
+моделям ждут своей очереди. Лимиты: ожидание и выполнение по 60 минут (настраивается).
+Укажите `model` в запросе — модель запустится сама; заголовок `X-Project` — имя проекта.
+Обзор: `GET /api/queue`, история: `GET /api/jobs`. Подробно — `docs/QUEUE.md`, `SPEC.md` (4.5).
+
 ## Установка (Windows)
 
 1. Установите **Python 3.11+** (при установке отметьте «Add to PATH»)
@@ -83,7 +89,10 @@ curl -X POST -H "X-API-Password: ваш_пароль" -H "Content-Type: applicat
 # синтез речи (активна TTS-модель qwen3-tts); speaker — файл-образец из папки voices/
 curl -X POST -H "X-API-Password: ваш_пароль" -H "Content-Type: application/json"      -d '{"text": "Привет! Это проверка.", "language": "ru"}'      localhost:8000/api/tts
 
-# выключить всё
+# очередь: что выполняется и кто ждёт
+curl -H "X-API-Password: ваш_пароль" localhost:8000/api/queue
+
+# выключить всё (409 model_busy, если по модели есть задачи)
 curl -X POST -H "X-API-Password: ваш_пароль" localhost:8000/api/models/stop
 ```
 
@@ -102,6 +111,10 @@ curl -X POST -H "X-API-Password: ваш_пароль" localhost:8000/api/models/
 | `AIM_AUTOSTART` | `true` | Запускать модель из поля `model` запроса `/v1`, перезапускать упавший llama-server |
 | `GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM` | `1` | Обход выключенного Resizable BAR на Arc (см. ниже) |
 | AIM_PUBLIC_HOST | авто (IP LAN) | Адрес сервиса для других устройств (иначе определяется автоматически) |
+| `AIM_DB` | `data/ai_manager.db` | БД задач (SQLite) |
+| `AIM_JOB_WAIT_TIMEOUT` | `3600` | Сколько задача может ждать в очереди, сек (потом `expired`) |
+| `AIM_JOB_RUN_TIMEOUT` | `3600` | Сколько задача может выполняться, сек (потом `timeout`) |
+| `AIM_JOB_RETENTION_DAYS` | `14` | Сколько дней хранить историю задач |
 
 ## Производительность на Arc B580: Resizable BAR
 
