@@ -33,6 +33,11 @@ class ImageRequest(BaseModel):
     seed: Optional[int] = None
     # None — значение по умолчанию модели (FLUX.1-schnell: 0.0, SD/SDXL: 7.5)
     guidance_scale: Optional[float] = Field(default=None, ge=0.0, le=30.0)
+    # «Картинка → картинка»: исходное изображение (PNG/JPEG в base64) и сила изменения.
+    # strength 0.2–0.4 — стиль и детали при сохранении композиции; 0.8+ — почти новая картинка.
+    # Исходник приводится к width×height (обрезка по центру).
+    init_image_base64: Optional[str] = None
+    strength: float = Field(default=0.35, ge=0.05, le=1.0)
 
     @field_validator("width", "height")
     @classmethod

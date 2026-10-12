@@ -35,6 +35,9 @@ class LlamaServerBackend(Backend):
         self.parallel = int(entry.extra.get("parallel", 1))   # 1 слот: весь контекст одному пользователю
         self.flash_attn = entry.extra.get("flash_attn")        # "on" | "off" | "auto"
         self.extra_args = [str(a) for a in entry.extra.get("args", [])]
+        # «Зрение» мультимодальной модели (Qwen3.6 и др.): файл проектора изображений из того же репо.
+        # Необязателен: без файла модель запускается как текстовая (is_installed проверяет только веса)
+        self.mmproj: Optional[str] = entry.extra.get("mmproj")
         self.extra_env = {k: str(v) for k, v in entry.extra.get("env", {}).items()}
         # Параметры, подставляемые в каждый запрос, если клиент их не задал (reasoning_effort и т.п.)
         self.request_defaults: dict = dict(entry.extra.get("request_defaults", {}))
@@ -60,6 +63,13 @@ class LlamaServerBackend(Backend):
         download_with_retries(
             lambda: hf_hub_download(repo_id=repo, filename=fname, local_dir=str(self.cache_dir)),
             f"{repo}/{fname}")
+        if self.mmproj and not self._mmproj_path().exists():
+            download_with_retries(
+                lambda: hf_hub_download(repo_id=repo, filename=self.mmproj, local_dir=str(self.cache_dir)),
+                f"{repo}/{self.mmproj}")
+
+    def _mmproj_path(self) -> Path:
+        return self.cache_dir / (self.mmproj or "")
 
     # --- поиск бинарника ---
     def _resolve_bin(self) -> Path:
@@ -130,6 +140,8 @@ class LlamaServerBackend(Backend):
             cmd += ["--n-cpu-moe", str(int(self.n_cpu_moe))]
         if self.flash_attn:
             cmd += ["-fa", str(self.flash_attn)]
+        if self.mmproj and self._mmproj_path().exists():
+            cmd += ["--mmproj", str(self._mmproj_path())]
         cmd += self.extra_args
         env = {**os.environ, **self.extra_env}
         try:
