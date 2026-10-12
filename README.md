@@ -10,7 +10,10 @@ Windows, без Docker — запуск из консоли / автозапус
 | 1 | Код (Python, JS) | Qwen2.5-Coder-14B-Instruct-abliterated (Q4_K_M) | llama.cpp (Vulkan/SYCL, 100% GPU) | ~9 ГБ |
 | 1a | Код / агент (основная для local_code_worker) | GPT-OSS-20B (MoE, UD-Q4_K_XL) | llama.cpp (Vulkan, авто-подбор GPU/CPU) | ~11 ГБ |
 | 2 | Текст (русский) | Qwen2.5-14B_Uncensored_Instruct (Q4_K_M) | llama.cpp (Vulkan/SYCL, 100% GPU) | ~9 ГБ |
+| 2a | Текст (русский, контент для auto_posting) | Qwen3.6-35B-A3B (MoE, UD-Q4_K_XL) | llama.cpp (Vulkan, авто-подбор GPU/CPU) | ~12 ГБ + RAM |
 | 3 | Графика (текст→изображение) | DreamShaper 8 (SD 1.5) | OpenVINO (GPU) | ~4 ГБ |
+| 3a | Графика (обложки, кадры видео, до 1536px) | FLUX.1-schnell INT8 (Apache 2.0) | OpenVINO (GPU) | ~12 ГБ |
+| 4 | Речь (TTS, ru/en, клонирование голоса) | Qwen3-TTS 1.7B (Apache 2.0) | llama.cpp `llama-tts` (Vulkan) | ~2 ГБ |
 
 Активна всегда не более одной модели; запуск модели автоматически выгружает остальные.
 
@@ -77,6 +80,9 @@ curl -X POST -H "X-API-Password: ваш_пароль" -H "Content-Type: applicat
      -d '{"prompt": "закат над горами, фотореализм", "steps": 25}' \
      localhost:8000/api/image
 
+# синтез речи (активна TTS-модель qwen3-tts); speaker — файл-образец из папки voices/
+curl -X POST -H "X-API-Password: ваш_пароль" -H "Content-Type: application/json"      -d '{"text": "Привет! Это проверка.", "language": "ru"}'      localhost:8000/api/tts
+
 # выключить всё
 curl -X POST -H "X-API-Password: ваш_пароль" localhost:8000/api/models/stop
 ```
@@ -90,7 +96,7 @@ curl -X POST -H "X-API-Password: ваш_пароль" localhost:8000/api/models/
 | `AIM_REGISTRY` | `config/models.registry.json` | Реестр моделей |
 | `LLAMA_SERVER_BIN` | `llama-server` | Путь к llama-server (Vulkan/SYCL для Arc) |
 | `AIM_PORT_RANGE` | `8100-8199` | Порты для llama-server |
-| `AIM_HF_CACHE` | `~/.cache/ai-manager` | Кэш весов (HF_HOME) |
+| `AIM_HF_CACHE` | `~/.cache/ai-manager` | Кэш весов (HF_HOME). На этой машине на C: мало места — укажите папку на D: |
 | `AIM_AUTO_INSTALL` | `false` | Автоустановка моделей при старте |
 | `AIM_GPU_LAYERS` | `99` | Сколько слоёв выгружать на GPU (`-ngl`), если в реестре не задано |
 | `AIM_AUTOSTART` | `true` | Запускать модель из поля `model` запроса `/v1`, перезапускать упавший llama-server |
@@ -180,7 +186,8 @@ ai-manager/
     ├── backends/
     │   ├── base.py
     │   ├── llama_server.py     # GGUF+GPU
-    │   └── openvino_sd.py      # текст→картинка
+    │   ├── llama_tts.py        # текст→речь (Qwen3-TTS через llama-tts)
+    │   └── openvino_sd.py      # текст→картинка (SD/SDXL/FLUX)
     └── static/
         └── index.html
 ```

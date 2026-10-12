@@ -56,7 +56,7 @@
 | Поле | Обяз. | Описание |
 |---|---|---|
 | `name` | да | Уникальный идентификатор модели в сервисе |
-| `backend` | да | `llama_server` (текст, GGUF) или `openvino_sd` (картинки) |
+| `backend` | да | `llama_server` (текст, GGUF), `openvino_sd` (картинки) или `llama_tts` (речь) |
 | `model_ref` | да | llama_server: `repo:file` на HuggingFace; openvino_sd: `repo_id` |
 | `ngl` | нет | Число слоёв на GPU (`-ngl`, по умолчанию `AIM_GPU_LAYERS`=99). `null` — не передавать, llama-server сам подгонит выгрузку под свободную VRAM (`--fit`) |
 | `context` | нет | Размер контекста (`-c`, по умолчанию 16384) |
@@ -65,6 +65,8 @@
 | `flash_attn` | нет | `on` / `off` / `auto` (`-fa`) |
 | `args` | нет | Дополнительные аргументы llama-server (список строк) |
 | `env` | нет | Переменные окружения процесса llama-server (поверх `.env`) |
+| `mmproj` | llama_tts | Файл аудио-кодека в том же репозитории (Qwen3-TTS) |
+| `default_steps` / `default_guidance` / `max_side` | нет | openvino_sd: значения по умолчанию модели, ограничение стороны (1536) |
 | `request_defaults` | нет | Параметры, подставляемые в каждый запрос `/v1/chat/completions` и `/api/chat`, если клиент их не задал (например `reasoning_effort`) |
 
 Пример оптимизированной записи (gpt-oss-20b на Arc B580 без Resizable BAR):
@@ -192,8 +194,8 @@
 }
 ```
 
-`prompt` обязателен; `width`/`height` кратны 64 (иначе `400`);
-`seed` опционален. Ответ 200:
+`prompt` обязателен; `width`/`height` кратны 64, 256..1536 (иначе `400`);
+`seed` и `guidance_scale` опциональны (по умолчанию — `default_guidance` модели). Ответ 200:
 
 ```json
 {
@@ -205,6 +207,21 @@
 ```
 
 Ошибки: `400` параметры, `409` нет активной / активна текстовая, `502` ошибка генерации.
+
+### 4.3a Речь: POST /api/tts
+
+```json
+{"text": "Привет!", "language": "ru", "speaker": "narrator.wav", "temperature": null}
+```
+
+`text` обязателен (до 4000 символов); `speaker` — имя файла-образца (wav/mp3, 5–15 с)
+в папке `voices/` для клонирования голоса. Ответ 200:
+
+```json
+{"model": "qwen3-tts", "backend": "llama_tts", "format": "wav", "duration_sec": 4.2, "audio_base64": "..."}
+```
+
+Ошибки: `409` нет активной / активна модель другого типа, `502` ошибка синтеза.
 
 ### 4.4 OpenAI-совместимый прокси
 
@@ -247,18 +264,27 @@
 
 - Установка: `snapshot_download(model_ref)` в `AIM_HF_CACHE`.
 - Проверка: снапшот с `model_index.json` в кэше.
-- Запуск: загрузка `optimum.intel.OVStableDiffusionPipeline.from_pretrained(...,
-  export=True)` и перенос на устройство GPU (Intel Arc); смена активной модели
+- Запуск: загрузка `optimum.intel.OVDiffusionPipeline.from_pretrained(...)` (класс SD/SDXL/FLUX
+  определяется по `model_index.json`; готовые OpenVINO-сборки — без конвертации,
+  иначе `export=True`) и перенос на устройство GPU (Intel Arc); смена активной модели
   выгружает пайплайн (`del` + `gc`).
 - Запрос: `pipe(prompt, negative_prompt, num_inference_steps, height, width,
   generator=seed)`. Результат — PNG в base64.
 - Зависимости: `optimum-intel[openvino]`, `torch` (см. requirements.txt).
 
-### 5.3 Добавление бэкенда
+### 5.3 `llama_tts` (речь, GGUF, GPU)
+
+- Установка: `hf_hub_download` файлов `model_ref` и `mmproj` в `AIM_HF_CACHE/<name>/`.
+- Запуск: проверка весов и `llama-tts.exe` рядом с llama-server; GPU резервируется (I1).
+- Запрос: отдельный процесс `llama-tts -m <веса> -mm <mmproj> --tts-lang <язык>
+  [--tts-speaker-file voices/<speaker>] --output <wav>`; лог — `logs/llama-tts-<name>.log`.
+
+### 5.4 Добавление бэкенда
 
 Наследовать `app/backends/base.py.Backend`, реализовать методы жизненного цикла
-и `chat` (текст) и/или `generate_image` (графика); зарегистрировать в `BACKENDS`
-(`app/manager.py`). Класс-атрибут `supports_images` определяет тип модели.
+и `chat` (текст), `generate_image` (графика) и/или `synthesize` (речь); зарегистрировать
+в `BACKENDS` (`app/manager.py`). Класс-атрибуты `supports_images` / `supports_audio`
+определяют тип модели (`text` / `image` / `audio`).
 
 ## 6. Состояния модели
 

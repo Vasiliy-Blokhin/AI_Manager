@@ -12,6 +12,15 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+# Антивирус (Kaspersky) проверяет HTTPS своим корневым сертификатом из хранилища Windows.
+# Python по умолчанию его не знает (certifi) — без этого загрузка моделей с HuggingFace падает
+# с CERTIFICATE_VERIFY_FAILED. truststore заставляет Python доверять системному хранилищу, как браузер.
+try:
+    import truststore
+    truststore.inject_into_ssl()
+except ImportError:
+    pass
+
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,7 +35,7 @@ from .registry import Registry, RegistryError
 from .schemas import (ChatRequest, ChatResponse, ErrorResponse, ImageRequest,
                       ImageResponse, InstallRequest, InstallResponse, ModelInfo,
                       ModelListResponse, StartResponse, StatusResponse,
-                      StopResponse)
+                      StopResponse, TTSRequest, TTSResponse)
 
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BASE_DIR.parent
@@ -203,6 +212,21 @@ def chat(req: ChatRequest):
 def image(req: ImageRequest):
     try:
         return manager.image(req)
+    except RuntimeError as e:
+        if str(e) == "NO_ACTIVE_MODEL":
+            raise _err("no_active_model",
+                       "Нет активной модели. Запустите одну: POST /api/models/{name}/start", 409)
+        raise
+    except WrongModelTypeError as e:
+        raise _err("wrong_model_type", str(e), 409)
+    except BackendError as e:
+        raise _err("backend_error", str(e), 502)
+
+
+@app.post("/api/tts", response_model=TTSResponse)
+def tts(req: TTSRequest):
+    try:
+        return manager.tts(req)
     except RuntimeError as e:
         if str(e) == "NO_ACTIVE_MODEL":
             raise _err("no_active_model",
