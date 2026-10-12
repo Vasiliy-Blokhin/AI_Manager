@@ -1,4 +1,4 @@
-"""AI Manager Service v2.2 — FastAPI: веб + REST API + OpenAI-прокси (/v1) + авторизация по паролю (.env)."""
+"""AI Manager Service v2.3 — FastAPI: REST API + OpenAI-прокси (/v1) + очередь задач (SQLite) + авторизация по паролю (.env)."""
 from __future__ import annotations
 
 import os
@@ -22,15 +22,20 @@ except ImportError:
     pass
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request
+from typing import Optional
+
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
+from starlette.concurrency import run_in_threadpool
 
 from .backends.base import BackendError
-from .manager import (ModelManager, ModelNotFoundError, NotInstalledError,
-                      WrongModelTypeError)
+from .executors import backend_of, exec_chat, register_all
+from .jobs import JobQueue, JobStore, Ticket
+from .manager import ModelManager, ModelNotFoundError, NotInstalledError
 from .openai_proxy import build_openai_router
+from .queue_api import build_queue_router, http_errors, project_of, timeouts_of
 from .registry import Registry, RegistryError
 from .schemas import (ChatRequest, ChatResponse, ErrorResponse, ImageRequest,
                       ImageResponse, InstallRequest, InstallResponse, ModelInfo,
@@ -81,6 +86,10 @@ def _settings() -> dict:
         # Авто-запуск модели из поля "model" запроса и перезапуск упавшего llama-server
         "autostart": os.getenv("AIM_AUTOSTART", "true").lower() in ("1", "true", "yes"),
         "public_origin": _public_origin(),
+        # Очередь задач: сколько ждать в очереди / сколько выполнять (сек), хранение истории (дни)
+        "job_wait_timeout": float(os.getenv("AIM_JOB_WAIT_TIMEOUT", "3600")),
+        "job_run_timeout": float(os.getenv("AIM_JOB_RUN_TIMEOUT", "3600")),
+        "job_retention_days": float(os.getenv("AIM_JOB_RETENTION_DAYS", "14")),
     }
 
 
@@ -90,7 +99,11 @@ def _err(code: str, msg: str, status: int) -> HTTPException:
 
 registry = Registry(os.path.expandvars(os.getenv(
     "AIM_REGISTRY", str(PROJECT_ROOT / "config" / "models.registry.json"))))
-manager = ModelManager(registry, _settings())
+SETTINGS = _settings()
+manager = ModelManager(registry, SETTINGS)
+store = JobStore(os.path.expandvars(os.getenv("AIM_DB", str(PROJECT_ROOT / "data" / "ai_manager.db"))))
+queue = JobQueue(manager, store, SETTINGS)
+register_all(queue)
 
 
 @asynccontextmanager
@@ -103,11 +116,14 @@ async def lifespan(app: FastAPI):
                 manager.install(entry.name)
         except BackendError:
             pass
+    await queue.start()
     yield
+    await queue.stop()
     manager.shutdown()
+    store.close()
 
 
-app = FastAPI(title="AI Manager Service", version="2.2.0", lifespan=lifespan)
+app = FastAPI(title="AI Manager Service", version="2.3.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -168,9 +184,15 @@ def install(req: InstallRequest):
 
 
 @app.post("/api/models/{name}/start", response_model=StartResponse)
-def start(name: str):
+async def start(name: str):
+    """Ручной запуск. 409 model_busy, если по активной модели есть задачи."""
     try:
-        return StartResponse(**manager.start(name))
+        manager._get(name)
+        if name == queue.current_model() and queue.busy_with(name):
+            # модель уже работает и занята задачами — переключения нет, это не ошибка
+            return StartResponse(name=name, running=True, stopped=[])
+        with http_errors():
+            return StartResponse(**await queue.manual(manager.start, name))
     except ModelNotFoundError:
         raise _err("model_not_found", f"Модель '{name}' не найдена в реестре", 404)
     except NotInstalledError as e:
@@ -180,72 +202,74 @@ def start(name: str):
 
 
 @app.post("/api/models/stop", response_model=StopResponse)
-def stop():
-    return StopResponse(**manager.stop())
+async def stop():
+    """Ручная остановка. 409 model_busy, если по активной модели есть задачи."""
+    with http_errors():
+        return StopResponse(**await queue.manual(manager.stop))
 
 
 @app.get("/api/status", response_model=StatusResponse)
-def status():
-    return StatusResponse(**manager.status())
+async def status():
+    st = await run_in_threadpool(manager.status)
+    snap = queue.snapshot()
+    return StatusResponse(**st, queue_running=len(snap["running"]),
+                          queue_waiting=len(snap["waiting"]), switch_locked=snap["switch_locked"])
+
+
+async def _queued(request: Request, kind: str, model: Optional[str], summary: str) -> Ticket:
+    """Ставит синхронный запрос в очередь и ждёт её (после возврата нужная модель запущена)."""
+    wait_timeout, run_timeout = timeouts_of(request)
+    t = queue.new_ticket(kind=kind, model=queue.resolve_model(kind, model),
+                         project=project_of(request), summary=summary,
+                         wait_timeout=wait_timeout, run_timeout=run_timeout)
+    await queue.acquire(t, request.is_disconnected)
+    return t
 
 
 @app.post("/api/chat", response_model=ChatResponse)
-def chat(req: ChatRequest):
+async def chat(req: ChatRequest, request: Request, response: Response):
     if req.stream:
         raise _err("unsupported", "stream=true не поддерживается в /api/chat — используйте /v1/chat/completions", 400)
-    try:
-        response = manager.chat(req)
-        return ChatResponse(model=response.model, backend=response.backend,
-                            content=response.content, usage=response.usage)
-    except RuntimeError as e:
-        if str(e) == "NO_ACTIVE_MODEL":
-            raise _err("no_active_model",
-                       "Нет активной модели. Запустите одну: POST /api/models/{name}/start", 409)
-        raise
-    except WrongModelTypeError as e:
-        raise _err("wrong_model_type", str(e), 409)
-    except BackendError as e:
-        raise _err("backend_error", str(e), 502)
+    payload = {"messages": [m.model_dump() for m in req.messages], "temperature": req.temperature}
+    if req.max_tokens:
+        payload["max_tokens"] = req.max_tokens
+    with http_errors():
+        t = await _queued(request, "chat", req.model, req.messages[-1].content if req.messages else "")
+        response.headers["X-Job-Id"] = t.id
+        result = await queue.execute(t, exec_chat(queue, t, payload), usage=lambda r: r["usage"])
+    return ChatResponse(model=t.model, backend=backend_of(queue, t).backend_name,
+                        content=result["content"], usage=result["usage"] or {})
 
 
 @app.post("/api/image", response_model=ImageResponse)
-def image(req: ImageRequest):
-    try:
-        return manager.image(req)
-    except RuntimeError as e:
-        if str(e) == "NO_ACTIVE_MODEL":
-            raise _err("no_active_model",
-                       "Нет активной модели. Запустите одну: POST /api/models/{name}/start", 409)
-        raise
-    except WrongModelTypeError as e:
-        raise _err("wrong_model_type", str(e), 409)
-    except BackendError as e:
-        raise _err("backend_error", str(e), 502)
+async def image(req: ImageRequest, request: Request, response: Response):
+    with http_errors():
+        t = await _queued(request, "image", req.model, req.prompt)
+        response.headers["X-Job-Id"] = t.id
+        return await queue.execute(t, queue.run_blocking(t, backend_of(queue, t).generate_image, req))
 
 
 @app.post("/api/tts", response_model=TTSResponse)
-def tts(req: TTSRequest):
-    try:
-        return manager.tts(req)
-    except RuntimeError as e:
-        if str(e) == "NO_ACTIVE_MODEL":
-            raise _err("no_active_model",
-                       "Нет активной модели. Запустите одну: POST /api/models/{name}/start", 409)
-        raise
-    except WrongModelTypeError as e:
-        raise _err("wrong_model_type", str(e), 409)
-    except BackendError as e:
-        raise _err("backend_error", str(e), 502)
+async def tts(req: TTSRequest, request: Request, response: Response):
+    with http_errors():
+        t = await _queued(request, "tts", req.model, req.text)
+        response.headers["X-Job-Id"] = t.id
+        return await queue.execute(t, queue.run_blocking(t, backend_of(queue, t).synthesize, req))
 
 
 # ---------- Перезапуск: git pull + рестарт ТОЛЬКО этого процесса ----------
 
 @app.post("/api/restart")
-def restart_service():
+def restart_service(force: bool = False):
     """
     git pull + перезапуск сервиса. Перезапускается только процесс AI Manager
     (по PID текущего процесса) — другие Python-процессы не затрагиваются.
+    Пока в очереди есть задачи — 409 queue_busy (force=true — перезапустить всё равно).
     """
+    snap = queue.snapshot()
+    busy = len(snap["running"]) + len(snap["waiting"])
+    if busy and not force:
+        raise _err("queue_busy", f"В очереди задач: {busy}. Дождитесь их или POST /api/restart?force=true", 409)
     result = {"git": None, "restarting": True}
 
     try:
@@ -275,7 +299,8 @@ def restart_service():
 
 # ---------- OpenAI-совместимый прокси (/v1) ----------
 
-app.include_router(build_openai_router(manager))
+app.include_router(build_openai_router(queue))
+app.include_router(build_queue_router(queue))
 
 @app.exception_handler(HTTPException)
 async def http_exc_handler(request: Request, exc: HTTPException):
