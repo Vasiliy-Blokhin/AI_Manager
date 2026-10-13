@@ -38,7 +38,8 @@ class OpenVinoSdBackend(Backend):
         super().__init__(entry, settings)
         self.cache_dir = Path(settings.get("hf_cache", "~/.cache/ai-manager")).expanduser() / entry.name
         self._pipe = None
-        self._i2i = None   # Image2ImagePipeline (genai): режим «картинка → картинка»
+        self._i2i = None   # Image2ImagePipeline (genai): режим «картинка → картинка», создаётся по запросу
+        self._devices: dict = {}
         self._engine = None
 
     # --- установка ---
@@ -72,20 +73,34 @@ class OpenVinoSdBackend(Backend):
             import openvino_genai as ov_genai
         except ImportError as e:
             raise BackendError(f"Не установлен openvino-genai ({e}): venv\\Scripts\\python -m pip install openvino-genai")
-        devices = {"text_encoder": "GPU", "denoise": "GPU", "vae": "GPU", **self.entry.extra.get("devices", {})}
+        self._devices = {"text_encoder": "GPU", "denoise": "GPU", "vae": "GPU", **self.entry.extra.get("devices", {})}
         try:
-            # Один набор скомпилированных моделей на два режима: Image2Image компилируется,
-            # Text2Image создаётся поверх него (общие веса — SDXL в памяти один раз)
-            i2i = ov_genai.Image2ImagePipeline(str(self.cache_dir))
-            # Кэш скомпилированных ядер GPU: первая генерация каждого размера иначе длится 15+ минут
-            ov_cache = Path(os.path.expandvars(self.settings.get("hf_cache", "~/.cache/ai-manager"))).expanduser() \
-                .parent / "ov-cache"
-            ov_cache.mkdir(parents=True, exist_ok=True)
-            i2i.compile(devices["text_encoder"], devices["denoise"], devices["vae"], CACHE_DIR=str(ov_cache))
-            self._i2i = i2i
-            return ov_genai.Text2ImagePipeline(i2i)
+            # ВАЖНО: Text2ImagePipeline, созданный поверх Image2ImagePipeline (общие веса), на Arc B580
+            # выдавал полностью чёрные кадры (13.10.2026). Поэтому обычная генерация — отдельным
+            # конвейером (проверенная схема), а «картинка → картинка» — отдельным, по первому запросу.
+            pipe = ov_genai.Text2ImagePipeline(str(self.cache_dir))
+            pipe.compile(self._devices["text_encoder"], self._devices["denoise"], self._devices["vae"],
+                         CACHE_DIR=str(self._ov_cache()))
+            return pipe
         except Exception as e:
-            raise BackendError(f"Не удалось загрузить пайплайн (genai, {devices}): {e}")
+            raise BackendError(f"Не удалось загрузить пайплайн (genai, {self._devices}): {e}")
+
+    def _ov_cache(self) -> Path:
+        """Кэш скомпилированных ядер GPU: первая генерация каждого размера иначе длится 15+ минут."""
+        path = Path(os.path.expandvars(self.settings.get("hf_cache", "~/.cache/ai-manager"))).expanduser() \
+            .parent / "ov-cache"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _img2img(self):
+        """Конвейер «картинка → картинка» — создаётся при первом запросе с исходным изображением."""
+        if self._i2i is None:
+            import openvino_genai as ov_genai
+            i2i = ov_genai.Image2ImagePipeline(str(self.cache_dir))
+            i2i.compile(self._devices["text_encoder"], self._devices["denoise"], self._devices["vae"],
+                        CACHE_DIR=str(self._ov_cache()))
+            self._i2i = i2i
+        return self._i2i
 
     def _start_optimum(self):
         try:
@@ -152,7 +167,7 @@ class OpenVinoSdBackend(Backend):
         if request.negative_prompt and "flux" not in self.entry.model_ref.lower():
             kwargs["negative_prompt"] = request.negative_prompt
         if request.init_image_base64:
-            if self._i2i is None:
+            if self._engine != "genai":
                 raise BackendError("Режим «картинка → картинка» доступен только для движка genai")
             import openvino as ov
             import numpy as np
@@ -164,7 +179,7 @@ class OpenVinoSdBackend(Backend):
             left, top = (src.width - w) // 2, (src.height - h) // 2
             src = src.crop((left, top, left + w, top + h))
             kwargs.pop("width"), kwargs.pop("height")
-            tensor = self._i2i.generate(request.prompt, ov.Tensor(np.array(src, dtype=np.uint8)[None]),
+            tensor = self._img2img().generate(request.prompt, ov.Tensor(np.array(src, dtype=np.uint8)[None]),
                                         strength=float(request.strength), **kwargs)
         else:
             tensor = self._pipe.generate(request.prompt, **kwargs)
