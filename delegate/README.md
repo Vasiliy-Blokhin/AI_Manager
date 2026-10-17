@@ -26,7 +26,7 @@ Claude Code отдаёт через него простые задачи мод�
 | `model` | `code` → qwen3-coder-30b (100k), `text` → qwen3.6-35b (RU), `reason` → gpt-oss-20b, или точное имя. По умолчанию — **уже активная** модель (без переключения GPU) |
 | `compact` | Сжатие входа: `light` (по умолчанию — хвостовые пробелы, лишние пустые строки, повторы, строки длиннее 2000 симв.), `logs` (+ схлопывание строк, отличающихся только числами/временем), `none`. С `output_file` всегда `none` |
 | `line_numbers` | Пронумеровать строки входа (для задач «где находится X») |
-| `max_tokens` | Лимит ответа (16384; без `output_file`) |
+| `max_tokens` | Лимит ответа (100000; без `output_file`) |
 | `timeout_sec` | Лимит выполнения одного запроса к модели (3600) |
 | `max_return_chars` | Обрезка возвращаемого текста (4000) |
 
@@ -65,7 +65,7 @@ claude mcp add -s user ai-manager-delegate -- D:\projects\AI_Manager\venv\Script
 
 Настройки (переменные окружения или `.env` AI Manager): `DELEGATE_AIM_URL`,
 `DELEGATE_DEFAULT_MODEL`, `DELEGATE_CODE_MODEL`, `DELEGATE_TEXT_MODEL`, `DELEGATE_REASON_MODEL`,
-`DELEGATE_TIMEOUT` (сек, 3600), `DELEGATE_WAIT_TIMEOUT` (сек, 3600), `DELEGATE_MAX_TOKENS` (16384),
+`DELEGATE_TIMEOUT` (сек, 3600), `DELEGATE_WAIT_TIMEOUT` (сек, 3600), `DELEGATE_MAX_TOKENS` (100000),
 `DELEGATE_MAX_CHUNKS` (24), `DELEGATE_LONG_LINE` (2000), `DELEGATE_PROJECT`. Пароль — `AIM_PASSWORD` из `.env`.
 
 ## Статистика

@@ -14,8 +14,9 @@ for /f "usebackq eol=# tokens=1,2 delims==" %%A in (".env") do (
 echo Сервис слушает %HOST%:%PORT%
 
 :loop
-REM Внешний сторож: убивает процесс, если /health не отвечает (один экземпляр)
-start "" /b powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0watchdog.ps1" -Port %PORT%
+REM Внешний сторож: убивает процесс, если /health не отвечает (один экземпляр).
+REM Своё окно (без /b): иначе -WindowStyle Hidden прячет консоль самого run.bat.
+start "AI-Manager watchdog" /min powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0watchdog.ps1" -Port %PORT%
 echo [%date% %time%] Запуск AI Manager...
 REM --app-dir с путём проекта — по нему сторож и restart.bat находят именно этот процесс
 python -m uvicorn app.main:app --app-dir "%CD%" --host %HOST% --port %PORT%

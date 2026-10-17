@@ -7,7 +7,7 @@
       "display_name": "Qwen2.5-Coder-14B (unc)",
       "description": "Код: Python/JS, без цензуры (abliterated)",
       "ngl": 99,
-      "context": 16384
+      "context": 100000
     },
     {
       "name": "qwen3-coder-30b-a3b-instruct",
@@ -25,7 +25,7 @@
       "display_name": "GPT-OSS-20B",
       "description": "Код/агент: MoE 20.9B/3.6B active, reasoning. Основная модель local_code_worker",
       "ngl": null,
-      "context": 32768,
+      "context": 100000,
       "parallel": 1,
       "flash_attn": "on",
       "args": [
@@ -52,7 +52,7 @@
       "display_name": "Qwen3.6-35B-A3B",
       "description": "Текст (лучший русский): статьи, посты, сценарии. MoE 35B/3B active. «Зрение» (mmproj): анализ изображений через /v1/chat/completions (image_url)",
       "ngl": null,
-      "context": 32768,
+      "context": 100000,
       "parallel": 1,
       "flash_attn": "on",
       "args": [
@@ -83,7 +83,7 @@
       "display_name": "Qwen2.5-14B Uncensored",
       "description": "Текст, в т.ч. русский, без цензуры",
       "ngl": 99,
-      "context": 16384
+      "context": 100000
     },
     {
       "name": "dreamshaper-8",
@@ -150,6 +150,23 @@
         "vae": "CPU"
       },
       "_comment": "FLUX на Arc B580 без ReBAR не работает: fp16 даёт шум, f32 — 25+ мин/кадр; на CPU — 8 мин/кадр"
+    },
+    {
+      "name": "realvisxl-v5-ov",
+      "backend": "openvino_sd",
+      "model_ref": "SG161222/RealVisXL_V5.0",
+      "display_name": "RealVisXL V5.0 FP16 (GPU, VAE на CPU)",
+      "description": "Фотореалистичный SDXL (OpenRAIL++, коммерция разрешена): заметно реалистичнее базового SDXL INT8. Веса FP16 без квантования",
+      "default_steps": 30,
+      "default_guidance": 5.0,
+      "max_side": 1536,
+      "engine": "genai",
+      "devices": {
+        "text_encoder": "GPU",
+        "denoise": "GPU",
+        "vae": "CPU"
+      },
+      "_comment": "Готовой OpenVINO-сборки нет: конвертируется скриптом scripts/convert_realvisxl.py в кэш realvisxl-v5-ov (install() скачал бы сырые diffusers-веса)"
     }
   ]
 }

@@ -30,7 +30,7 @@ class LlamaServerBackend(Backend):
         ngl = entry.extra.get("ngl", settings.get("gpu_layers", 99))
         # ngl = null в реестре → не передаём -ngl, llama-server сам подгоняет под VRAM (--fit)
         self.gpu_layers: Optional[int] = None if ngl is None else int(ngl)
-        self.context = int(entry.extra.get("context", 16384))
+        self.context = int(entry.extra.get("context", 100000))
         self.n_cpu_moe = entry.extra.get("n_cpu_moe")          # MoE-эксперты первых N слоёв — на CPU
         self.parallel = int(entry.extra.get("parallel", 1))   # 1 слот: весь контекст одному пользователю
         self.flash_attn = entry.extra.get("flash_attn")        # "on" | "off" | "auto"
