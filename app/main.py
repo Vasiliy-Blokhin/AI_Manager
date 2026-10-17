@@ -37,6 +37,7 @@ from .manager import ModelManager, ModelNotFoundError, NotInstalledError
 from .openai_proxy import build_openai_router
 from .queue_api import build_queue_router, http_errors, project_of, timeouts_of
 from .registry import Registry, RegistryError
+from .watchdog import Watchdog
 from .schemas import (ChatRequest, ChatResponse, ErrorResponse, ImageRequest,
                       ImageResponse, InstallRequest, InstallResponse, ModelInfo,
                       ModelListResponse, StartResponse, StatusResponse,
@@ -104,6 +105,7 @@ manager = ModelManager(registry, SETTINGS)
 store = JobStore(os.path.expandvars(os.getenv("AIM_DB", str(PROJECT_ROOT / "data" / "ai_manager.db"))))
 queue = JobQueue(manager, store, SETTINGS)
 register_all(queue)
+watchdog = Watchdog(PROJECT_ROOT / "logs", int(os.getenv("AIM_PORT", "8000")), manager.shutdown)
 
 
 @asynccontextmanager
@@ -117,7 +119,9 @@ async def lifespan(app: FastAPI):
         except BackendError:
             pass
     await queue.start()
+    await watchdog.start()
     yield
+    await watchdog.stop()
     await queue.stop()
     manager.shutdown()
     store.close()
@@ -158,6 +162,12 @@ async def password_middleware(request: Request, call_next):
 
 
 # ---------- API ----------
+
+@app.get("/health", include_in_schema=False)
+async def health():
+    """Живость сервиса без пароля: отвечает сам event loop (для сторожей)."""
+    return {"status": "ok"}
+
 
 @app.get("/api/models", response_model=ModelListResponse)
 def list_models():

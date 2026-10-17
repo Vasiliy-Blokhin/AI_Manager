@@ -3,14 +3,9 @@ chcp 65001 >nul
 REM ==== Перезапуск AI Manager (только свой процесс, не трогая другие Python) ====
 cd /d "%~dp0.."
 
-REM Находим PID процесса uvicorn app.main:app по имени окна
-for /f "tokens=2" %%P in ('tasklist /fi "imagename eq python.exe" /fo list ^| findstr /i "PID:"') do (
-    REM Проверяем командную строку каждого python-процесса
-    for /f "tokens=*" %%C in ('wmic process where "processid=%%P" get commandline /value 2^>nul ^| findstr /i "app.main:app"') do (
-        echo Найден AI Manager PID=%%P, останавливаем...
-        taskkill /PID %%P /F
-    )
-)
+REM Процесс uvicorn этого проекта: app.main:app + путь проекта (--app-dir) в командной строке.
+REM wmic в новых Windows удалён — ищем через PowerShell (CIM).
+powershell -NoProfile -Command "$root=(Get-Location).Path; Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | Where-Object { $_.CommandLine -like '*app.main:app*' -and $_.CommandLine -like \"*$root*\" } | ForEach-Object { Write-Host ('Найден AI Manager PID=' + $_.ProcessId + ', останавливаем...'); taskkill /T /F /PID $_.ProcessId | Out-Null }"
 
-echo Перезапуск через run.bat...
-call scripts\run.bat
+echo Если сервис запущен через run.bat (автозапуск), он поднимется сам через 5 секунд.
+echo Иначе запустите scripts\run.bat.
