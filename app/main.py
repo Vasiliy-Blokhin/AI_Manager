@@ -37,6 +37,7 @@ from .manager import ModelManager, ModelNotFoundError, NotInstalledError
 from .openai_proxy import build_openai_router
 from .queue_api import build_queue_router, http_errors, project_of, timeouts_of
 from .registry import Registry, RegistryError
+from .watchdog import Watchdog
 from .schemas import (ChatRequest, ChatResponse, ErrorResponse, ImageRequest,
                       ImageResponse, InstallRequest, InstallResponse, ModelInfo,
                       ModelListResponse, StartResponse, StatusResponse,
@@ -90,6 +91,11 @@ def _settings() -> dict:
         "job_wait_timeout": float(os.getenv("AIM_JOB_WAIT_TIMEOUT", "3600")),
         "job_run_timeout": float(os.getenv("AIM_JOB_RUN_TIMEOUT", "3600")),
         "job_retention_days": float(os.getenv("AIM_JOB_RETENTION_DAYS", "14")),
+        # Зависания: срок запуска модели; сколько ждать завершения потока после отмены/таймаута;
+        # сколько один шаг генерации картинки может длиться (0 — не проверять). Затем — перезапуск.
+        "model_start_timeout": float(os.getenv("AIM_MODEL_START_TIMEOUT", "1200")),
+        "stuck_grace": float(os.getenv("AIM_STUCK_GRACE", "300")),
+        "image_stall_timeout": float(os.getenv("AIM_IMAGE_STALL_TIMEOUT", "600")),
     }
 
 
@@ -104,6 +110,8 @@ manager = ModelManager(registry, SETTINGS)
 store = JobStore(os.path.expandvars(os.getenv("AIM_DB", str(PROJECT_ROOT / "data" / "ai_manager.db"))))
 queue = JobQueue(manager, store, SETTINGS)
 register_all(queue)
+watchdog = Watchdog(PROJECT_ROOT / "logs", int(os.getenv("AIM_PORT", "8000")), manager.shutdown)
+queue.on_hang = watchdog.restart
 
 
 @asynccontextmanager
@@ -117,7 +125,9 @@ async def lifespan(app: FastAPI):
         except BackendError:
             pass
     await queue.start()
+    await watchdog.start()
     yield
+    await watchdog.stop()
     await queue.stop()
     manager.shutdown()
     store.close()
@@ -158,6 +168,12 @@ async def password_middleware(request: Request, call_next):
 
 
 # ---------- API ----------
+
+@app.get("/health", include_in_schema=False)
+async def health():
+    """Живость сервиса без пароля: отвечает сам event loop (для сторожей)."""
+    return {"status": "ok"}
+
 
 @app.get("/api/models", response_model=ModelListResponse)
 def list_models():
@@ -246,7 +262,8 @@ async def image(req: ImageRequest, request: Request, response: Response):
     with http_errors():
         t = await _queued(request, "image", req.model, req.prompt)
         response.headers["X-Job-Id"] = t.id
-        return await queue.execute(t, queue.run_blocking(t, backend_of(queue, t).generate_image, req))
+        return await queue.execute(t, queue.run_blocking(t, backend_of(queue, t).generate_image, req,
+                                                         t.cancel_event))
 
 
 @app.post("/api/tts", response_model=TTSResponse)
