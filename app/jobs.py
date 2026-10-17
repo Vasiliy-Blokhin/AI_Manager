@@ -19,6 +19,11 @@
   выполнение — AIM_JOB_RUN_TIMEOUT (статус timeout, генерация прерывается).
   Клиент может переопределить: заголовки X-Job-Wait-Timeout / X-Job-Timeout
   или поля wait_timeout / run_timeout в POST /api/jobs.
+  Запуск модели ограничен AIM_MODEL_START_TIMEOUT (иначе зависший запуск держал GPU вечно).
+- Зависание: поток OpenVINO/запуска модели прервать нельзя. Если после отмены/таймаута поток
+  не завершился за AIM_STUCK_GRACE секунд или генерация картинки стоит на одном шаге дольше
+  AIM_IMAGE_STALL_TIMEOUT — сервис перезапускается (on_hang → сторож, run.bat поднимает заново).
+  Зависшая async-задача один раз возвращается в очередь (столбец restarts), затем — timeout.
 
 Статусы: queued → running → done | failed | cancelled | timeout; queued → expired | cancelled.
 """
@@ -78,14 +83,15 @@ CREATE TABLE IF NOT EXISTS jobs (
     error        TEXT,
     usage        TEXT,                       -- JSON {prompt_tokens, completion_tokens, ...}
     payload      TEXT,                       -- JSON запроса (только async: нужен для повтора после рестарта)
-    result       TEXT                        -- JSON результата (только async)
+    result       TEXT,                       -- JSON результата (только async)
+    restarts     INTEGER NOT NULL DEFAULT 0  -- сколько раз задача зависла и сервис перезапускался
 );
 CREATE INDEX IF NOT EXISTS ix_jobs_status ON jobs(status);
 CREATE INDEX IF NOT EXISTS ix_jobs_created ON jobs(created_at);
 """
 
 _LIST_COLUMNS = ("id, project, kind, model, mode, stream, status, created_at, started_at, "
-                 "finished_at, wait_timeout, run_timeout, summary, error, usage")
+                 "finished_at, wait_timeout, run_timeout, summary, error, usage, restarts")
 
 
 class JobStore:
@@ -100,6 +106,9 @@ class JobStore:
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA synchronous=NORMAL")
         self._db.executescript(_SCHEMA)
+        cols = {r[1] for r in self._db.execute("PRAGMA table_info(jobs)")}
+        if "restarts" not in cols:  # БД старой версии
+            self._db.execute("ALTER TABLE jobs ADD COLUMN restarts INTEGER NOT NULL DEFAULT 0")
 
     def create(self, **fields: Any) -> None:
         cols = ", ".join(fields)
@@ -209,8 +218,11 @@ class Ticket:
     run_timeout: float
     granted: asyncio.Event = field(default_factory=asyncio.Event)
     running: bool = False
-    deadline: Optional[float] = None      # monotonic-срок выполнения (после запуска модели)
+    deadline: Optional[float] = None      # monotonic-срок: запуска модели, затем выполнения
+    starting: bool = False                 # идёт запуск модели (deadline — срок запуска)
     stop_reason: Optional[JobCancelled] = None
+    stop_at: Optional[float] = None        # monotonic-момент запроса остановки
+    cancel_event: threading.Event = field(default_factory=threading.Event)  # для потоков (genai)
     work: Optional[asyncio.Future] = None  # текущая прерываемая работа (child-task)
     threads: int = 0                       # незавершённые потоки (картинка/речь не прерываются)
     released: bool = False
@@ -231,6 +243,12 @@ class JobQueue:
         self.run_timeout = float(settings.get("job_run_timeout", 3600))
         self.retention_days = float(settings.get("job_retention_days", 14))
         self.autostart = bool(settings.get("autostart", True))
+        self.start_timeout = float(settings.get("model_start_timeout", 1200))
+        self.stuck_grace = float(settings.get("stuck_grace", 300))
+        self.image_stall = float(settings.get("image_stall_timeout", 600))
+        # вызывается при зависшем потоке: перезапуск процесса (main подключает сторож)
+        self.on_hang: Optional[Callable[[str], None]] = None
+        self._hang_reported = False
         self._waiting: List[Ticket] = []          # в порядке поступления
         self._running: Dict[str, Ticket] = {}
         self._maintenance: Optional[str] = None   # идёт ручной start/stop — новые задачи не выдаются
@@ -368,8 +386,11 @@ class JobQueue:
             self.store.update(t.id, status="running", started_at=time.time())
             # Модель запускается в потоке: llama-server стартует до нескольких минут.
             # Переключение безопасно: задача получила слот, только когда по старой модели задач нет.
+            t.starting, t.deadline = True, time.monotonic() + self.start_timeout
             await self.run_blocking(t, self.manager.start, t.model, cancellable=False)
-            t.deadline = time.monotonic() + t.run_timeout
+            if t.stop_reason:
+                raise t.stop_reason
+            t.starting, t.deadline = False, time.monotonic() + t.run_timeout
         except JobCancelled as e:
             self.release(t, e.status, str(e))
             raise
@@ -485,6 +506,8 @@ class JobQueue:
         if t.stop_reason or t.released:
             return
         t.stop_reason = reason
+        t.stop_at = time.monotonic()
+        t.cancel_event.set()  # генерация genai прервётся на ближайшем шаге
         if t.work is not None and not t.work.done():
             t.work.cancel()
         elif not t.granted.is_set():
@@ -505,11 +528,14 @@ class JobQueue:
             await asyncio.sleep(1.0)
             now = time.monotonic()
             for t in list(self._running.values()):
+                if self._check_hang(t, now):
+                    break
                 if t.deadline is None or now <= t.deadline:
                     continue
                 if not t.stop_requested:
-                    self._request_stop(t, JobCancelled(
-                        "timeout", f"Превышено время выполнения ({int(t.run_timeout)} с)"))
+                    msg = (f"Модель не запустилась за {int(self.start_timeout)} с" if t.starting
+                           else f"Превышено время выполнения ({int(t.run_timeout)} с)")
+                    self._request_stop(t, JobCancelled("timeout", msg))
                 elif (now > t.deadline + 30 and t.work is None and t.threads == 0
                       and not t.released and t.stop_reason is not None):
                     # «осиротевшая» задача: например, клиент отключился до начала стрима
@@ -521,6 +547,61 @@ class JobQueue:
                     self.store.cleanup(self.retention_days)
                 except Exception:
                     logger.exception("Очистка БД задач")
+
+    # ---------- зависания ----------
+
+    def _check_hang(self, t: Ticket, now: float) -> bool:
+        """True — поток задачи завис, начат перезапуск сервиса."""
+        if self._hang_reported or t.threads <= 0:
+            return False
+        if t.stop_at is not None:
+            # после отмены поток должен закончиться: genai — на следующем шаге, запуск — сам
+            grace = self.stuck_grace * (1 if t.stop_reason and t.stop_reason.status == "timeout" else 3)
+            if now - t.stop_at > grace:
+                self._hang(t, f"задача {t.id} ({t.model}) остановлена {int(now - t.stop_at)} с назад, "
+                              f"но её поток не завершился")
+                return True
+        elif t.kind == "image" and not t.starting and self.image_stall > 0:
+            progress = getattr(self._backend(t.model), "progress", None)
+            # только между шагами: до первого шага идёт компиляция ядер (до 15+ мин), после последнего — VAE
+            if progress and progress[0] < progress[1] and now - progress[2] > self.image_stall:
+                self._request_stop(t, JobCancelled(
+                    "timeout", f"Генерация изображения зависла на шаге {progress[0]}/{progress[1]}"))
+                self._hang(t, f"задача {t.id} ({t.model}): шаг {progress[0]}/{progress[1]} "
+                              f"не завершился за {int(now - progress[2])} с")
+                return True
+        return False
+
+    def _backend(self, model: str):
+        try:
+            return self.manager._backend_for(self.manager.registry.get(model))
+        except Exception:
+            return None
+
+    def _hang(self, t: Ticket, reason: str) -> None:
+        """Зависший поток не освободит GPU — закрываем задачи и перезапускаем процесс."""
+        self._hang_reported = True
+        logger.error("Очередь: зависание — %s", reason)
+        now = time.time()
+        for job in list(self._running.values()):
+            row = self.store.get(job.id) or {}
+            restarts = row.get("restarts") or 0
+            if row.get("mode") == "async" and row.get("payload") and restarts < 1:
+                # async-задачу — один раз в очередь заново: после перезапуска её подхватит start()
+                self.store.update(job.id, status="queued", started_at=None, created_at=now,
+                                  finished_at=None, restarts=restarts + 1,
+                                  error=f"Повтор после зависания: {reason}"[:2000])
+                job.released = True
+                logger.info("Очередь: задача %s будет повторена после перезапуска", job.id)
+            else:
+                self.store.update(job.id, restarts=restarts + 1)
+                if job.released:
+                    self.store.update(job.id, status="timeout",
+                                      error=f"Зависание, сервис перезапущен: {reason}"[:2000])
+                self.release(job, "timeout", f"Зависание, сервис перезапущен: {reason}")
+        if self.on_hang is not None:
+            threading.Thread(target=self.on_hang, args=(f"зависание задачи: {reason}",),
+                             name="aim-hang", daemon=True).start()
 
     # ---------- планировщик ----------
 

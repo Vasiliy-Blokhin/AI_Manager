@@ -71,7 +71,7 @@ class FakeImage(FakeText):
     backend_name = "fake_image"
     supports_images = True
 
-    def generate_image(self, request):
+    def generate_image(self, request, cancel=None):
         time.sleep(request.steps * 0.1)
         return ImageResponse(model=self.entry.name, backend=self.backend_name, width=request.width,
                              height=request.height, steps=request.steps, image_base64="AA==")

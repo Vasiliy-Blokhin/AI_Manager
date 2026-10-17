@@ -55,6 +55,7 @@ class Watchdog:
         self._beat = time.monotonic()
         self._task: Optional[asyncio.Task] = None
         self._stop = threading.Event()
+        self._restart_lock = threading.Lock()
 
     # ---------- запуск / остановка ----------
 
@@ -94,7 +95,7 @@ class Watchdog:
         while not self._stop.wait(2.0):
             stale = time.monotonic() - self._beat
             if stale > self.hang_timeout:
-                self._restart(f"event loop не отвечает {int(stale)} с")
+                self.restart(f"event loop не отвечает {int(stale)} с")
                 return
             if time.monotonic() >= next_probe:
                 next_probe = time.monotonic() + self.probe_interval
@@ -104,7 +105,7 @@ class Watchdog:
                 fails += 1
                 logger.warning("Сторож: %s не отвечает (%d/%d)", self.url, fails, self.probe_fails)
                 if fails >= self.probe_fails:
-                    self._restart(f"{self.url} не отвечает {fails} раз подряд")
+                    self.restart(f"{self.url} не отвечает {fails} раз подряд")
                     return
 
     # ---------- аварийный перезапуск ----------
@@ -122,7 +123,12 @@ class Watchdog:
             logger.exception("Сторож: не удалось записать стеки")
             return None
 
-    def _restart(self, reason: str) -> None:
+    def restart(self, reason: str) -> None:
+        """Аварийный перезапуск (также по зависшей задаче очереди — работает и при AIM_WATCHDOG=false)."""
+        with self._restart_lock:
+            self._do_restart(reason)
+
+    def _do_restart(self, reason: str) -> None:
         path = self._dump(reason)
         msg = f"Сторож: {reason} — перезапуск сервиса (стеки: {path})"
         logger.error(msg)

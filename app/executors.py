@@ -214,7 +214,7 @@ async def exec_chat(queue: JobQueue, t: Ticket, payload: dict) -> dict:
 
 async def exec_image(queue: JobQueue, t: Ticket, payload: dict) -> dict:
     req = ImageRequest(**{k: v for k, v in payload.items() if k in ImageRequest.model_fields})
-    resp = await queue.run_blocking(t, backend_of(queue, t).generate_image, req)
+    resp = await queue.run_blocking(t, backend_of(queue, t).generate_image, req, t.cancel_event)
     return resp.model_dump()
 
 

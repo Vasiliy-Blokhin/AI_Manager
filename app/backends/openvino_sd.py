@@ -23,6 +23,8 @@ import base64
 import os
 import gc
 import io
+import threading
+import time
 from pathlib import Path
 
 from ..registry import ModelEntry
@@ -41,6 +43,11 @@ class OpenVinoSdBackend(Backend):
         self._i2i = None   # Image2ImagePipeline (genai): режим «картинка → картинка», создаётся по запросу
         self._devices: dict = {}
         self._engine = None
+        # (шаг, всего шагов, monotonic-время) последнего шага генерации — очередь по нему ловит
+        # зависание между шагами; None — шаги ещё не начались (компиляция/кодирование промпта)
+        self.progress: tuple[int, int, float] | None = None
+        self._cancel: threading.Event | None = None
+        self._callback_ok = True  # поддерживает ли сборка openvino-genai параметр callback
 
     # --- установка ---
     def is_installed(self) -> bool:
@@ -128,7 +135,9 @@ class OpenVinoSdBackend(Backend):
         return self._pipe is not None
 
     # --- инференс ---
-    def generate_image(self, request: ImageRequest) -> ImageResponse:
+    def generate_image(self, request: ImageRequest,
+                       cancel: threading.Event | None = None) -> ImageResponse:
+        """cancel — событие отмены: genai прерывает генерацию на ближайшем шаге (поток освобождается)."""
         if self._pipe is None:
             raise BackendError("Модель не запущена")
         max_side = int(self.entry.extra.get("max_side", 1536))
@@ -137,6 +146,7 @@ class OpenVinoSdBackend(Backend):
         guidance = request.guidance_scale
         if guidance is None:
             guidance = self.entry.extra.get("default_guidance")
+        self.progress, self._cancel = None, cancel
         try:
             image = (self._generate_genai(request, guidance) if self._engine == "genai"
                      else self._generate_optimum(request, guidance))
@@ -144,6 +154,10 @@ class OpenVinoSdBackend(Backend):
             raise
         except Exception as e:
             raise BackendError(f"Ошибка генерации изображения: {e}")
+        finally:
+            self.progress, self._cancel = None, None
+        if cancel is not None and cancel.is_set():
+            raise BackendError("Генерация прервана")
 
         buf = io.BytesIO()
         image.save(buf, format="PNG")
@@ -179,11 +193,29 @@ class OpenVinoSdBackend(Backend):
             left, top = (src.width - w) // 2, (src.height - h) // 2
             src = src.crop((left, top, left + w, top + h))
             kwargs.pop("width"), kwargs.pop("height")
-            tensor = self._img2img().generate(request.prompt, ov.Tensor(np.array(src, dtype=np.uint8)[None]),
-                                        strength=float(request.strength), **kwargs)
+            src_tensor = ov.Tensor(np.array(src, dtype=np.uint8)[None])
+            tensor = self._run(self._img2img().generate, request.prompt, src_tensor,
+                               strength=float(request.strength), **kwargs)
         else:
-            tensor = self._pipe.generate(request.prompt, **kwargs)
+            tensor = self._run(self._pipe.generate, request.prompt, **kwargs)
         return Image.fromarray(tensor.data[0])
+
+    def _step_callback(self):
+        """Колбэк шага genai: отмечает прогресс; True — прервать генерацию."""
+        def cb(step: int, num_steps: int, latent) -> bool:
+            self.progress = (step + 1, num_steps, time.monotonic())
+            return bool(self._cancel and self._cancel.is_set())
+        return cb
+
+    def _run(self, generate, *args, **kwargs):
+        if self._callback_ok:
+            try:
+                return generate(*args, callback=self._step_callback(), **kwargs)
+            except Exception as e:
+                if "callback" not in str(e).lower():
+                    raise
+                self._callback_ok = False  # старая сборка без callback — генерируем без прогресса
+        return generate(*args, **kwargs)
 
     def _generate_optimum(self, request: ImageRequest, guidance):
         import torch
