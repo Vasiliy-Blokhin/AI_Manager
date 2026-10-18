@@ -97,6 +97,10 @@ def _settings() -> dict:
         "model_start_timeout": float(os.getenv("AIM_MODEL_START_TIMEOUT", "1200")),
         "stuck_grace": float(os.getenv("AIM_STUCK_GRACE", "300")),
         "image_stall_timeout": float(os.getenv("AIM_IMAGE_STALL_TIMEOUT", "600")),
+        # «Липкое» удержание модели после задачи (агент шлёт шаги подряд) и предел ожидания
+        # задач к другим моделям, после которого удержание не даётся
+        "sticky_sec": float(os.getenv("AIM_STICKY_SEC", "20")),
+        "sticky_max_sec": float(os.getenv("AIM_STICKY_MAX_SEC", "180")),
     }
 
 
