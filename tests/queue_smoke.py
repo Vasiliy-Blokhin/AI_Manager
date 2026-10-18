@@ -26,6 +26,7 @@ REGISTRY = {"models": [
 os.environ.update({
     "AIM_PASSWORD": "test", "AIM_REGISTRY": str(TMP / "registry.json"), "AIM_DB": str(TMP / "jobs.db"),
     "AIM_JOB_WAIT_TIMEOUT": "60", "AIM_JOB_RUN_TIMEOUT": "60", "AIM_AUTO_INSTALL": "false",
+    "AIM_STICKY_SEC": "0",  # удержание модели проверяет tests.sticky_smoke, здесь — порядок без него
 })
 
 import httpx  # noqa: E402

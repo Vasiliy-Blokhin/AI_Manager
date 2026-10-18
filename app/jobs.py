@@ -13,6 +13,11 @@
   до `parallel` штук одновременно (поле реестра, по умолчанию 1).
 - Модель переключается ТОЛЬКО когда по текущей модели нет ни выполняющихся,
   ни ожидающих задач. Затем берётся самая старая задача к другой модели.
+- «Липкое» удержание: агенты (local_code_worker) шлют много коротких запросов подряд
+  с паузами в секунды на выполнение инструментов. Чтобы в эти паузы не вклинивалась
+  чужая модель (переключение + потеря KV-кэша на каждом шаге), после задачи модель
+  держится ещё AIM_STICKY_SEC секунд. Удержание не даётся, если самая старая задача
+  к другой модели ждёт дольше AIM_STICKY_MAX_SEC — так другие проекты не голодают.
 - Ручной start/stop модели запрещён (409 model_busy), пока по активной модели
   есть задачи.
 - Таймауты: ожидание в очереди — AIM_JOB_WAIT_TIMEOUT (статус expired),
@@ -246,6 +251,11 @@ class JobQueue:
         self.start_timeout = float(settings.get("model_start_timeout", 1200))
         self.stuck_grace = float(settings.get("stuck_grace", 300))
         self.image_stall = float(settings.get("image_stall_timeout", 600))
+        # удержание модели после задачи (0 — выкл.) и предел ожидания задач к другим моделям
+        self.sticky_sec = float(settings.get("sticky_sec", 20))
+        self.sticky_max = float(settings.get("sticky_max_sec", 180))
+        self._hold: Optional[dict] = None          # {"model", "project", "until"} (monotonic)
+        self._hold_timer: Optional[asyncio.TimerHandle] = None
         # вызывается при зависшем потоке: перезапуск процесса (main подключает сторож)
         self.on_hang: Optional[Callable[[str], None]] = None
         self._hang_reported = False
@@ -497,7 +507,8 @@ class JobQueue:
         t.finalized = True
         if t in self._waiting:
             self._waiting.remove(t)
-        self._running.pop(t.id, None)
+        if self._running.pop(t.id, None) is not None and not t.stop_requested:
+            self._start_hold(t)
         self._schedule()
 
     # ---------- отмена ----------
@@ -623,6 +634,8 @@ class JobQueue:
             target = current
         elif current and any(t.model == current for t in pending):
             target = current                     # по активной модели ещё есть задачи — не переключаемся
+        elif self._holding(current, pending):
+            return                               # удержание: проект, вероятно, пришлёт следующий шаг
         else:
             target = pending[0].model            # самая старая задача к другой модели
         free = self._slots(target) - len(self._running)
@@ -632,6 +645,38 @@ class JobQueue:
             if t.model == target:
                 self._grant(t)
                 free -= 1
+
+    def _start_hold(self, t: Ticket) -> None:
+        """После успешно отработавшей задачи держим её модель ещё sticky_sec секунд."""
+        if self.sticky_sec <= 0:
+            return
+        self._hold = {"model": t.model, "project": t.project,
+                      "until": time.monotonic() + self.sticky_sec}
+
+    def _holding(self, current: Optional[str], pending: List[Ticket]) -> bool:
+        """
+        True — не переключаться: удержание по текущей модели ещё идёт, и задачи к другим
+        моделям ждут меньше sticky_max. По окончании удержания планировщик вызывается снова.
+        """
+        hold = self._hold
+        if not hold or hold["model"] != current:
+            return False
+        now = time.monotonic()
+        left = hold["until"] - now
+        oldest = min(t.created for t in pending)
+        if left <= 0 or now - oldest >= self.sticky_max:
+            self._hold = None
+            return False
+        # проснуться к концу удержания или к пределу ожидания — что раньше
+        delay = min(left, self.sticky_max - (now - oldest)) + 0.05
+        if self._hold_timer is not None:
+            self._hold_timer.cancel()
+        try:
+            self._hold_timer = asyncio.get_running_loop().call_later(delay, self._schedule)
+        except RuntimeError:  # вне event loop (не должно случаться) — без удержания
+            self._hold = None
+            return False
+        return True
 
     def busy_with(self, model: Optional[str]) -> int:
         """Сколько задач (ожидающих и выполняющихся) приходится на модель."""
@@ -716,9 +761,14 @@ class JobQueue:
         by_model: Dict[str, int] = {}
         for t in waiting:
             by_model[t.model] = by_model.get(t.model, 0) + 1
+        hold = self._hold
+        if hold and (hold["until"] <= now or hold["model"] != self.current_model()):
+            hold = None
         return {
             "active": self.manager.active_name(),
             "current": self.current_model(),
+            "hold": {"model": hold["model"], "project": hold["project"],
+                     "left_sec": round(hold["until"] - now, 1)} if hold else None,
             "switch_locked": bool(self._running) or self.busy_with(self.current_model()) > 0,
             "maintenance": self._maintenance,
             "running": [brief(t) for t in self._running.values()],

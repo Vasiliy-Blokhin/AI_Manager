@@ -38,6 +38,7 @@ from .openai_proxy import build_openai_router
 from .queue_api import build_queue_router, http_errors, project_of, timeouts_of
 from .registry import Registry, RegistryError
 from .watchdog import Watchdog
+from .orphans import OrphanSweeper
 from .schemas import (ChatRequest, ChatResponse, ErrorResponse, ImageRequest,
                       ImageResponse, InstallRequest, InstallResponse, ModelInfo,
                       ModelListResponse, StartResponse, StatusResponse,
@@ -96,6 +97,10 @@ def _settings() -> dict:
         "model_start_timeout": float(os.getenv("AIM_MODEL_START_TIMEOUT", "1200")),
         "stuck_grace": float(os.getenv("AIM_STUCK_GRACE", "300")),
         "image_stall_timeout": float(os.getenv("AIM_IMAGE_STALL_TIMEOUT", "600")),
+        # «Липкое» удержание модели после задачи (агент шлёт шаги подряд) и предел ожидания
+        # задач к другим моделям, после которого удержание не даётся
+        "sticky_sec": float(os.getenv("AIM_STICKY_SEC", "20")),
+        "sticky_max_sec": float(os.getenv("AIM_STICKY_MAX_SEC", "180")),
     }
 
 
@@ -112,6 +117,8 @@ queue = JobQueue(manager, store, SETTINGS)
 register_all(queue)
 watchdog = Watchdog(PROJECT_ROOT / "logs", int(os.getenv("AIM_PORT", "8000")), manager.shutdown)
 queue.on_hang = watchdog.restart
+# llama-server, оставшиеся от упавшего экземпляра сервиса, держат память и порты — убираем
+orphans = OrphanSweeper(float(os.getenv("AIM_ORPHAN_INTERVAL", "300")))
 
 
 @asynccontextmanager
@@ -124,9 +131,11 @@ async def lifespan(app: FastAPI):
                 manager.install(entry.name)
         except BackendError:
             pass
+    orphans.start()
     await queue.start()
     await watchdog.start()
     yield
+    orphans.stop()
     await watchdog.stop()
     await queue.stop()
     manager.shutdown()

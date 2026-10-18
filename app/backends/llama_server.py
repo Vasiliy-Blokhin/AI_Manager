@@ -13,6 +13,7 @@ from typing import Optional
 import httpx
 from huggingface_hub import hf_hub_download
 
+from ..orphans import bind_to_service
 from ..registry import ModelEntry
 from ..schemas import ChatRequest, ChatResponse, Usage
 from .base import Backend, BackendError, StartInfo, download_with_retries
@@ -150,6 +151,7 @@ class LlamaServerBackend(Backend):
             log = open(log_path, "ab", buffering=0)
             log.write(f"\n==== {time.strftime('%Y-%m-%d %H:%M:%S')} {' '.join(cmd)}\n".encode())
             self._proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, env=env)
+            bind_to_service(self._proc.pid)  # упадёт сервис — Windows завершит и llama-server
         except FileNotFoundError as e:
             if getattr(e, "winerror", None) == 2:
                 raise BackendError(
