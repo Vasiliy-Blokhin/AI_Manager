@@ -35,6 +35,8 @@
         "2048",
         "--load-mode",
         "none",
+        "--fit-target",
+        "3072",
         "--jinja"
       ],
       "env": {
@@ -43,7 +45,7 @@
       "request_defaults": {
         "reasoning_effort": "low"
       },
-      "_comment": "ngl=null: llama-server сам подбирает выгрузку под VRAM (--fit, часть MoE-экспертов на CPU). DISABLE_HOST_VISIBLE_VIDMEM — обход выключенного Resizable BAR: prefill 36 -> ~800-1600 ток/с. ub=2048 — быстрый prefill. 1 слот — весь контекст одному пользователю, кэш промпта не вытесняется."
+      "_comment": "ngl=null: llama-server сам подбирает выгрузку под VRAM (--fit, часть MoE-экспертов на CPU). DISABLE_HOST_VISIBLE_VIDMEM — обход выключенного Resizable BAR: prefill 36 -> ~800-1600 ток/с. ub=2048 — быстрый prefill. --fit-target 3072: при запасе по умолчанию 1 ГБ Windows вытесняет часть буферов из VRAM в RAM — prefill 136 / decode 8.6 ток/с вместо 1101 / 20.7 (замер 18.10.2026). 1 слот — весь контекст одному пользователю, кэш промпта не вытесняется."
     },
     {
       "name": "qwen36-35b-a3b",
