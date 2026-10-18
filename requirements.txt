@@ -7,4 +7,5 @@ python-dotenv>=1.0
 optimum-intel[openvino]>=1.20
 torch>=2.3
 truststore>=0.9
+psutil>=5.9
 openvino-genai>=2026.3

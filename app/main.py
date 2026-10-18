@@ -38,6 +38,7 @@ from .openai_proxy import build_openai_router
 from .queue_api import build_queue_router, http_errors, project_of, timeouts_of
 from .registry import Registry, RegistryError
 from .watchdog import Watchdog
+from .orphans import OrphanSweeper
 from .schemas import (ChatRequest, ChatResponse, ErrorResponse, ImageRequest,
                       ImageResponse, InstallRequest, InstallResponse, ModelInfo,
                       ModelListResponse, StartResponse, StatusResponse,
@@ -112,6 +113,8 @@ queue = JobQueue(manager, store, SETTINGS)
 register_all(queue)
 watchdog = Watchdog(PROJECT_ROOT / "logs", int(os.getenv("AIM_PORT", "8000")), manager.shutdown)
 queue.on_hang = watchdog.restart
+# llama-server, оставшиеся от упавшего экземпляра сервиса, держат память и порты — убираем
+orphans = OrphanSweeper(float(os.getenv("AIM_ORPHAN_INTERVAL", "300")))
 
 
 @asynccontextmanager
@@ -124,9 +127,11 @@ async def lifespan(app: FastAPI):
                 manager.install(entry.name)
         except BackendError:
             pass
+    orphans.start()
     await queue.start()
     await watchdog.start()
     yield
+    orphans.stop()
     await watchdog.stop()
     await queue.stop()
     manager.shutdown()
