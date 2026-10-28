@@ -1,6 +1,7 @@
 """Текстовый бэкенд: GGUF-модели через llama-server (Vulkan/SYCL, 100% GPU на Intel Arc)."""
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import signal
@@ -13,13 +14,20 @@ from typing import Optional
 import httpx
 from huggingface_hub import hf_hub_download
 
+from ..gpu_mem import wait_vram_released
 from ..orphans import bind_to_service
 from ..registry import ModelEntry
 from ..schemas import ChatRequest, ChatResponse, Usage
 from .base import Backend, BackendError, StartInfo, download_with_retries
 
+logger = logging.getLogger(__name__)
+
 
 class LlamaServerBackend(Backend):
+    """Класс LlamaServerBackend управляет запуском сервера llama-server, настраивая параметры модели, пути к
+    весам и дополнительным аргументам. Он проверяет наличие модели, скачивает её при необходимости и хранит
+    настройки, такие как порт, количество слоёв GPU, контекст и дополнительные переменные окружения.
+    """
     backend_name = "llama_server"
     supports_images = False
 
@@ -48,6 +56,9 @@ class LlamaServerBackend(Backend):
 
     # --- файлы ---
     def _weights_path(self) -> Path:
+        """Возвращает путь к файлу весов модели, извлечённый из строки model_ref. Если формат неверный,
+        генерирует BackendError.
+        """
         repo, _, fname = self.entry.model_ref.partition(":")
         if not repo or not fname:
             raise BackendError(f"Неверный model_ref для llama_server (нужно 'repo:file'): {self.entry.model_ref}")
@@ -57,6 +68,9 @@ class LlamaServerBackend(Backend):
         return self._weights_path().exists()
 
     def install(self) -> None:
+        """Скачивает модель и, при необходимости, mmproj-файл в кэш. Проверяет корректность model_ref и
+        создаёт каталог cache_dir.
+        """
         repo, _, fname = self.entry.model_ref.partition(":")
         if not repo or not fname:
             raise BackendError(f"Неверный model_ref: {self.entry.model_ref}")
@@ -107,6 +121,8 @@ class LlamaServerBackend(Backend):
 
     # --- жизненный цикл ---
     def _free_port(self) -> int:
+        """Ищет свободный порт в заданном диапазоне, возвращая его. Если все заняты, генерирует BackendError.
+        """
         import socket
         for port in range(self.port_range[0], self.port_range[1] + 1):
             with socket.socket() as s:
@@ -114,7 +130,11 @@ class LlamaServerBackend(Backend):
                     return port
         raise BackendError("Нет свободных портов в AIM_PORT_RANGE")
 
-    def start(self) -> StartInfo:
+    def start(self, _attempt: int = 0) -> StartInfo:
+        """Запускает сервер llama‑server, проверяя наличие весов и бинарника, создаёт лог, запускает процесс,
+        ждёт готовности эндпоинта и возвращает информацию о PID и URL. При ошибках валидации, запуске или
+        таймауте генерирует BackendError.
+        """
         if not self.is_installed():
             raise BackendError(f"Веса {self.entry.model_ref} не установлены. Сначала выполните install.")
         bin_path = self._resolve_bin()  # чёткая ошибка, если бинарник не найден / указан каталог
@@ -150,6 +170,7 @@ class LlamaServerBackend(Backend):
             # поверх — переменные из реестра (например, обходы для Vulkan на Intel Arc)
             log = open(log_path, "ab", buffering=0)
             log.write(f"\n==== {time.strftime('%Y-%m-%d %H:%M:%S')} {' '.join(cmd)}\n".encode())
+            log_start = log.tell()
             self._proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, env=env)
             bind_to_service(self._proc.pid)  # упадёт сервис — Windows завершит и llama-server
         except FileNotFoundError as e:
@@ -166,6 +187,13 @@ class LlamaServerBackend(Backend):
         deadline = time.time() + 600
         while time.time() < deadline:
             if self._proc.poll() is not None:
+                if _attempt < 2 and self._out_of_vram(log_path, log_start):
+                    # VRAM предыдущей модели ещё не освободилась (или её занял кто-то ещё) — ждём и повторяем
+                    logger.warning("llama-server %s: нехватка видеопамяти при запуске, повтор %d/2",
+                                   self.entry.name, _attempt + 1)
+                    self._proc = None
+                    wait_vram_released(float(self.settings.get("vram_idle_mb", 1536)), timeout=60)
+                    return self.start(_attempt + 1)
                 raise BackendError(
                     f"llama-server завершился сразу после запуска (код {self._proc.returncode}). "
                     f"Смотрите лог: {log_path}")
@@ -179,7 +207,21 @@ class LlamaServerBackend(Backend):
         self.stop()
         raise BackendError(f"Таймаут ожидания запуска llama-server. Смотрите лог: {log_path}")
 
+    @staticmethod
+    def _out_of_vram(log_path: Path, offset: int) -> bool:
+        """Упал ли только что запущенный llama-server из-за нехватки видеопамяти (по его логу)."""
+        try:
+            with open(log_path, "rb") as f:
+                f.seek(offset)
+                tail = f.read(1_000_000)
+        except OSError:
+            return False
+        return b"ErrorOutOfDeviceMemory" in tail or b"failed to allocate" in tail
+
     def stop(self) -> None:
+        """Останавливает запущенный процесс llama‑server, посылая SIGTERM и, при необходимости, kill после
+        таймаута. Сбрасывает внутренние ссылки на процесс и порт.
+        """
         if self._proc and self._proc.poll() is None:
             self._proc.send_signal(signal.SIGTERM)
             try:
@@ -194,6 +236,9 @@ class LlamaServerBackend(Backend):
         return bool(self._proc and self._proc.poll() is None and self._port)
 
     def is_running(self) -> bool:
+        """Проверяет, жив ли процесс и отвечает ли эндпоинт /health; возвращает True при статусе 200, иначе
+        False.
+        """
         if not self.process_alive():
             return False
         try:
@@ -210,6 +255,10 @@ class LlamaServerBackend(Backend):
 
     # --- инференс ---
     def chat(self, request: ChatRequest) -> ChatResponse:
+        """Выполняет запрос к локальному серверу llama-server, формируя payload из сообщений, температуры и
+        параметров, обрабатывает ответ, извлекает текст и статистику использования, возвращает
+        ChatResponse. При отсутствии запущенной модели или порта генерирует BackendError.
+        """
         if not self.is_running() or not self._port:
             raise BackendError("Модель не запущена")
         payload = {
