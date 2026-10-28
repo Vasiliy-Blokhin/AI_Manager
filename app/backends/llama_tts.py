@@ -36,6 +36,9 @@ VOICES_DIR = PROJECT_DIR / "voices"
 
 
 class LlamaTtsBackend(Backend):
+    """Класс‑обёртка для генерации речи с помощью llama-tts. Инициализирует пути к моделям, параметры GPU и
+    дополнительные аргументы.
+    """
     backend_name = "llama_tts"
     supports_audio = True
 
@@ -52,6 +55,9 @@ class LlamaTtsBackend(Backend):
 
     # --- файлы ---
     def _files(self) -> tuple[str, str, str]:
+        """Возвращает репозиторий, имя файла модели и mmproj. Проверяет наличие всех необходимых данных, иначе
+        бросает ошибку.
+        """
         repo, _, fname = self.entry.model_ref.partition(":")
         if not repo or not fname or not self.mmproj:
             raise BackendError("Для llama_tts нужны model_ref 'repo:file.gguf' и поле mmproj в реестре")
@@ -62,6 +68,7 @@ class LlamaTtsBackend(Backend):
         return (self.cache_dir / fname).exists() and (self.cache_dir / mmproj).exists()
 
     def install(self) -> None:
+        """Скачивает файлы модели и mmproj из Hugging Face в кэш‑директорию, создавая её при необходимости."""
         repo, fname, mmproj = self._files()
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         for f in (fname, mmproj):
@@ -70,6 +77,9 @@ class LlamaTtsBackend(Backend):
                 f"{repo}/{f}")
 
     def _tts_bin(self) -> Path:
+        """Определяет путь к исполняемому файлу llama‑tts, проверяя его наличие рядом с сервером. При
+        отсутствии генерирует ошибку.
+        """
         server = self._server_helper._resolve_bin()
         tts = server.with_name("llama-tts.exe" if server.suffix == ".exe" else "llama-tts")
         if not tts.is_file():
@@ -78,6 +88,9 @@ class LlamaTtsBackend(Backend):
 
     # --- жизненный цикл ---
     def start(self) -> StartInfo:
+        """Проверяет, что модель установлена, и помечает backend как готовый к работе, возвращая информацию о
+        процессе.
+        """
         if not self.is_installed():
             raise BackendError(f"Веса {self.entry.model_ref} не установлены. Сначала выполните install.")
         self._tts_bin()
@@ -92,6 +105,9 @@ class LlamaTtsBackend(Backend):
 
     # --- инференс ---
     def synthesize(self, request: TTSRequest) -> TTSResponse:
+        """Собирает команду для llama‑tts, запускает её, сохраняет аудио в WAV, измеряет длительность и
+        возвращает ответ с аудио в base64.
+        """
         if not self._ready:
             raise BackendError("Модель не запущена")
         _, fname, mmproj = self._files()
@@ -101,6 +117,7 @@ class LlamaTtsBackend(Backend):
                "-ngl", str(self.gpu_layers),
                "--tts-lang", request.language,
                "-p", request.text]
+        # Обрабатываем параметр speaker, если он задан
         if request.speaker:
             speaker = (VOICES_DIR / request.speaker).resolve()
             if VOICES_DIR.resolve() not in speaker.parents or not speaker.is_file():

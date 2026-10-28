@@ -22,6 +22,8 @@ _CLIENT: Optional[httpx.AsyncClient] = None
 
 
 def client() -> httpx.AsyncClient:
+    """Создаёт и возвращает глобальный httpx.AsyncClient без таймаута чтения, ограничивая только соединение.
+    """
     global _CLIENT
     if _CLIENT is None:
         # Без таймаута чтения: длительность ограничивает очередь (AIM_JOB_RUN_TIMEOUT).
@@ -72,6 +74,9 @@ def chat_summary(payload: dict) -> str:
 
 
 def usage_of(data: dict) -> Optional[dict]:
+    """Извлекает статистику токенов из словаря, возвращая словарь с ключами prompt_tokens, completion_tokens и
+    total_tokens, либо None.
+    """
     u = data.get("usage") if isinstance(data, dict) else None
     if not isinstance(u, dict):
         return None
@@ -79,6 +84,7 @@ def usage_of(data: dict) -> Optional[dict]:
 
 
 def _base_url(be: Backend) -> str:
+    """Получает базовый URL OpenAI‑интерфейса из бэкенда, генерируя ошибку, если он не поддерживается."""
     url = getattr(be, "openai_base_url", None)
     if not url:
         raise BackendError(f"Бэкенд {be.backend_name} не поддерживает OpenAI-интерфейс")
@@ -93,6 +99,9 @@ async def chat_completion(queue: JobQueue, t: Ticket, payload: dict) -> tuple[in
     body["stream"] = False
 
     async def _call() -> tuple[int, dict]:
+        """Отправляет POST‑запрос, обрабатывает ошибки HTTP и возвращает статус и JSON‑ответ, либо 502 с
+        текстом ошибки.
+        """
         try:
             r = await client().post(url, json=body)
         except httpx.HTTPError as e:
@@ -125,6 +134,9 @@ async def chat_stream(queue: JobQueue, t: Ticket, payload: dict) -> AsyncIterato
     status, error = "done", None
 
     async def _pump() -> None:
+        """Потоково читает ответ от модели, помещая чанки в очередь, и сигнализирует завершением, выбрасывая
+        ошибку при не‑200 статусе.
+        """
         async with client().stream("POST", url, json=body) as r:
             if r.status_code != 200:
                 text = (await r.aread()).decode("utf-8", "replace")[:1000]
@@ -144,6 +156,7 @@ async def chat_stream(queue: JobQueue, t: Ticket, payload: dict) -> AsyncIterato
                     break
                 yield chunk
                 continue
+            # Отменяем ожидание, если поток завершился раньше
             getter.cancel()
             exc = pump.exception()
             if exc is None:  # pump завершился — дочитать остаток
@@ -160,6 +173,7 @@ async def chat_stream(queue: JobQueue, t: Ticket, payload: dict) -> AsyncIterato
         status, error = "cancelled", "Клиент отключился во время генерации"
         raise
     except Exception as e:
+        # Различаем отмену задачи и другие ошибки
         if isinstance(e, JobCancelled):
             status, error = e.status, str(e)
             yield sse_error(e.status, str(e))
@@ -198,6 +212,9 @@ class JobStreamingResponse(StreamingResponse):
 # ---------- исполнители async-задач (POST /api/jobs) ----------
 
 async def exec_chat(queue: JobQueue, t: Ticket, payload: dict) -> dict:
+    """Выполняет чат‑комплешн, проверяя статус, формируя результат с моделью, содержимым, finish_reason и
+    usage, а также опциональными полями reasoning_content и tool_calls.
+    """
     code, data = await chat_completion(queue, t, payload)
     if code != 200:
         raise BackendError(f"llama-server вернул HTTP {code}: {json.dumps(data, ensure_ascii=False)[:500]}")
@@ -213,18 +230,23 @@ async def exec_chat(queue: JobQueue, t: Ticket, payload: dict) -> dict:
 
 
 async def exec_image(queue: JobQueue, t: Ticket, payload: dict) -> dict:
+    """Создаёт ImageRequest из payload, генерирует изображение через бэкенд и возвращает сериализованный
+    ответ.
+    """
     req = ImageRequest(**{k: v for k, v in payload.items() if k in ImageRequest.model_fields})
     resp = await queue.run_blocking(t, backend_of(queue, t).generate_image, req, t.cancel_event)
     return resp.model_dump()
 
 
 async def exec_tts(queue: JobQueue, t: Ticket, payload: dict) -> dict:
+    """Создаёт TTSRequest из payload, синтезирует речь через бэкенд и возвращает сериализованный ответ."""
     req = TTSRequest(**{k: v for k, v in payload.items() if k in TTSRequest.model_fields})
     resp = await queue.run_blocking(t, backend_of(queue, t).synthesize, req)
     return resp.model_dump()
 
 
 def register_all(queue: JobQueue) -> None:
+    """Регистрирует исполнители chat, image и tts в очереди JobQueue."""
     queue.register_executor("chat", exec_chat)
     queue.register_executor("image", exec_image)
     queue.register_executor("tts", exec_tts)

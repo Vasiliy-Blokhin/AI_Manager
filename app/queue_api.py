@@ -28,6 +28,9 @@ def err(code: str, msg: str, status: int) -> HTTPException:
 
 
 def project_of(request: Request, payload: Optional[dict] = None) -> str:
+    """Определяет проект из заголовка X-Project, payload или IP‑адреса клиента. Возвращает строку длиной до
+    100 символов.
+    """
     header = request.headers.get("X-Project", "").strip()
     if header:
         return header[:100]
@@ -40,6 +43,9 @@ def project_of(request: Request, payload: Optional[dict] = None) -> str:
 
 
 def _float_header(request: Request, name: str) -> Optional[float]:
+    """Преобразует значение заголовка в число с плавающей точкой. Возвращает None, если заголовок пуст, иначе
+    float. При неверном формате генерирует ошибку 400.
+    """
     raw = request.headers.get(name, "").strip()
     if not raw:
         return None
@@ -96,12 +102,18 @@ class JobSubmit(BaseModel):
 
 
 def _summary(kind: str, payload: dict) -> str:
+    """Создаёт краткое описание задачи: для chat вызывает chat_summary, иначе берёт prompt/text из payload,
+    обрезая до 300 символов.
+    """
     if kind == "chat":
         return chat_summary(payload)
     return str(payload.get("prompt") or payload.get("text") or "")[:300]
 
 
 def build_queue_router(queue: JobQueue) -> APIRouter:
+    """Фабрика роутера для API очереди. Определяет эндпоинты для состояния, добавления, списка, статистики,
+    получения и отмены задач, а также обрабатывает валидацию и ошибки.
+    """
     router = APIRouter(prefix="/api", tags=["queue"])
 
     @router.get("/queue")
@@ -111,9 +123,13 @@ def build_queue_router(queue: JobQueue) -> APIRouter:
 
     @router.post("/jobs", status_code=202)
     async def submit(req: JobSubmit, request: Request):
+        """Создаёт задачу в очереди, валидирует payload в зависимости от типа (image, tts, chat) и возвращает
+        id, статус, модель, проект и позицию в очереди.
+        """
         payload = dict(req.payload)
         if req.kind == "chat" and not payload.get("messages"):
             raise err("bad_request", "Для kind=chat нужно payload.messages", 400)
+        # Валидация payload в зависимости от kind
         try:
             if req.kind == "image":
                 ImageRequest(**payload)
@@ -143,9 +159,13 @@ def build_queue_router(queue: JobQueue) -> APIRouter:
 
     @router.get("/jobs/{job_id}")
     async def get_job(job_id: str, include_result: bool = True):
+        """Получает данные задачи по id, удаляет payload из ответа, добавляет позицию, если задача в очереди,
+        и возвращает объект задачи.
+        """
         job = queue.store.get(job_id, with_result=include_result)
         if not job:
             raise err("job_not_found", f"Задача '{job_id}' не найдена", 404)
+        # Удаляем payload из ответа, чтобы не раскрывать данные
         job.pop("payload", None)
         if job["status"] == "queued":
             job["position"] = queue.position(job_id)
@@ -153,6 +173,9 @@ def build_queue_router(queue: JobQueue) -> APIRouter:
 
     @router.post("/jobs/{job_id}/cancel")
     async def cancel_job(job_id: str):
+        """Отменяет задачу в очереди, если она активна, иначе возвращает статус завершения или ошибку о
+        несуществующей задаче.
+        """
         if queue.cancel(job_id):
             return {"id": job_id, "cancelling": True}
         job = queue.store.get(job_id, with_result=False)

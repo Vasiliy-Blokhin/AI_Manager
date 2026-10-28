@@ -33,6 +33,8 @@ from .queue_api import err, http_errors, project_of, timeouts_of
 
 
 def build_openai_router(queue: JobQueue) -> APIRouter:
+    """Создаёт APIRouter для эндпоинтов OpenAI: список моделей и чат‑комплитации. Возвращает готовый роутер.
+    """
     router = APIRouter(prefix="/v1", tags=["openai"])
     manager = queue.manager
 
@@ -47,6 +49,9 @@ def build_openai_router(queue: JobQueue) -> APIRouter:
 
     @router.post("/chat/completions")
     async def chat_completions(request: Request):
+        """Обрабатывает POST /chat/completions: валидирует JSON, создаёт задачу, запускает генерацию и
+        возвращает результат (или поток).
+        """
         try:
             payload = await request.json()
         except Exception:

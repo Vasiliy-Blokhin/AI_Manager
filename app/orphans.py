@@ -82,6 +82,9 @@ class OrphanSweeper:
         self._stop.set()
 
     def _loop(self) -> None:
+        """Функция периодически вызывает kill_orphans для текущего job, обрабатывая исключения и ожидая
+        заданный интервал.
+        """
         while not self._stop.is_set():
             try:
                 kill_orphans(self.name)
@@ -108,11 +111,16 @@ def _service_job() -> Optional[int]:
         from ctypes import wintypes
 
         class IO_COUNTERS(ctypes.Structure):
+            """Структура, описывающая счётчики ввода/вывода процесса: операции чтения/записи/другие и их
+            объёмы.
+            """
             _fields_ = [(n, ctypes.c_ulonglong) for n in
                         ("ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
                          "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
 
         class BASIC_LIMIT(ctypes.Structure):
+            """Базовые ограничения job: лимиты времени, памяти, количества процессов, приоритет и планировщик.
+            """
             _fields_ = [("PerProcessUserTimeLimit", ctypes.c_longlong),
                         ("PerJobUserTimeLimit", ctypes.c_longlong),
                         ("LimitFlags", wintypes.DWORD),
@@ -124,6 +132,9 @@ def _service_job() -> Optional[int]:
                         ("SchedulingClass", wintypes.DWORD)]
 
         class EXTENDED_LIMIT(ctypes.Structure):
+            """Расширенная структура ограничений job, включающая BASIC_LIMIT, IO_COUNTERS и лимиты памяти
+            процесса и job.
+            """
             _fields_ = [("BasicLimitInformation", BASIC_LIMIT),
                         ("IoInfo", IO_COUNTERS),
                         ("ProcessMemoryLimit", ctypes.c_size_t),

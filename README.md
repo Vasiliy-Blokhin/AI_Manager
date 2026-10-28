@@ -7,12 +7,9 @@ Windows, без Docker — запуск из консоли / автозапус
 
 | # | Назначение | Модель | Бэкенд | Размер в VRAM |
 |---|---|---|---|---|
-| 1 | Код (Python, JS) | Qwen2.5-Coder-14B-Instruct-abliterated (Q4_K_M) | llama.cpp (Vulkan/SYCL, 100% GPU) | ~9 ГБ |
-| 1a | Код / агент (основная для local_code_worker) | GPT-OSS-20B (MoE, UD-Q4_K_XL) | llama.cpp (Vulkan, авто-подбор GPU/CPU) | ~11 ГБ |
-| 2 | Текст (русский) | Qwen2.5-14B_Uncensored_Instruct (Q4_K_M) | llama.cpp (Vulkan/SYCL, 100% GPU) | ~9 ГБ |
-| 2a | Текст (русский, контент для auto_posting) | Qwen3.6-35B-A3B (MoE, UD-Q4_K_XL) | llama.cpp (Vulkan, авто-подбор GPU/CPU) | ~12 ГБ + RAM |
+| 1 | Код / агент (основная для local_code_worker) | GPT-OSS-20B (MoE, UD-Q4_K_XL) | llama.cpp (Vulkan, авто-подбор GPU/CPU) | ~11 ГБ |
+| 2 | Текст (русский, контент для auto_posting) | Qwen3.6-35B-A3B (MoE, UD-Q4_K_XL) | llama.cpp (Vulkan, авто-подбор GPU/CPU) | ~12 ГБ + RAM |
 | 3 | Графика (текст→изображение) | DreamShaper 8 (SD 1.5) | OpenVINO (GPU) | ~4 ГБ |
-| 3a | Графика (обложки, кадры видео, до 1536px) | FLUX.1-schnell INT8 (Apache 2.0) | OpenVINO (GPU) | ~12 ГБ |
 | 4 | Речь (TTS, ru/en, клонирование голоса) | Qwen3-TTS 1.7B (Apache 2.0) | llama.cpp `llama-tts` (Vulkan) | ~2 ГБ |
 
 Активна всегда не более одной модели; запуск модели автоматически выгружает остальные.
@@ -56,7 +53,13 @@ scripts\install_autostart.bat
 ```
 
 Создаёт задачу планировщика «AI-Manager», запускающую `run.bat` при входе
-пользователя (с правами администратора). Удалить: `scripts\remove_autostart.bat`.
+пользователя (с правами администратора), и снимает лимит выполнения 72 ч, который `schtasks`
+ставит по умолчанию (иначе Windows останавливает сервис через трое суток работы).
+Удалить: `scripts\remove_autostart.bat`.
+
+Задачу и `/health` раз в 5 мин проверяет общий монитор `D:\projects\services_monitor`
+(запускает задачу, если она остановлена, и сообщает о сбоях в Telegram); зависания внутри процесса
+ловят `app/watchdog.py` и `scripts/watchdog.ps1`.
 
 ## Пароль
 
@@ -69,12 +72,12 @@ scripts\install_autostart.bat
 # список моделей со статусами
 curl -H "X-API-Password: ваш_пароль" localhost:8000/api/models
 
-# скачать и установить модель (первый раз — долго, ~9 ГБ)
+# скачать и установить модель (первый раз — долго, ~11 ГБ)
 curl -X POST -H "X-API-Password: ваш_пароль" -H "Content-Type: application/json" \
-     -d '{"name": "qwen25-coder-14b-unc"}' localhost:8000/api/models/install
+     -d '{"name": "gpt-oss-20b"}' localhost:8000/api/models/install
 
 # запустить (остальные выключатся автоматически)
-curl -X POST -H "X-API-Password: ваш_пароль" localhost:8000/api/models/qwen25-coder-14b-unc/start
+curl -X POST -H "X-API-Password: ваш_пароль" localhost:8000/api/models/gpt-oss-20b/start
 
 # текстовый запрос (единый формат для всех текстовых моделей)
 curl -X POST -H "X-API-Password: ваш_пароль" -H "Content-Type: application/json" \
@@ -120,6 +123,7 @@ curl -X POST -H "X-API-Password: ваш_пароль" localhost:8000/api/models/
 | `AIM_IMAGE_STALL_TIMEOUT` | `600` | Шаг генерации картинки дольше стольких сек → перезапуск (`0` — выкл.) |
 | `AIM_STICKY_SEC` | `20` | После задачи модель держится столько сек, чтобы следующий шаг агента не ждал чужую модель (`0` — выкл.) |
 | `AIM_STICKY_MAX_SEC` | `180` | Удержание не даётся, если задача к другой модели ждёт дольше (защита от голодания) |
+| `AIM_VRAM_IDLE_MB` | `1536` | После остановки модели ждать (до 30 с), пока занятая VRAM опустится до этого уровня, — иначе следующая модель зависает или падает с `ErrorOutOfDeviceMemory` (`0` — не ждать) |
 
 ## Производительность на Arc B580: Resizable BAR
 
@@ -161,7 +165,7 @@ Continue, первый запуск, режим Agent для правок по �
 1. Установите Continue в VS Code.
 2. В `~/.continue/config.yaml` добавьте модель: `provider: openai`,
    `apiBase: http://&lt;IP_сервера&gt;:8000/v1`, `apiKey: пароль из .env`,
-   `model: qwen25-coder-14b-unc` (имя из реестра).
+   `model: gpt-oss-20b` (имя из реестра).
 3. Откройте папку проекта, чат — `Ctrl+L`, инлайн-правки — `Ctrl+I`,
    правки сразу в нескольких файлах — режим **Agent**.
 
