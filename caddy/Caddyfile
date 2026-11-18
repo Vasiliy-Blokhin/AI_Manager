@@ -1,0 +1,12 @@
+{
+	# HTTPS на нестандартных портах: внешние 8443/8080 проброшены на эти же порты.
+	# Let's Encrypt не может проверить домен через 8443/8080, поэтому используем
+	# DNS-01 challenge через API DuckDNS (токен — из caddy\duckdns.token).
+	https_port 8443
+	http_port 8080
+	acme_dns duckdns {env.DUCKDNS_TOKEN}
+}
+
+iox-ai-manager.duckdns.org {
+	reverse_proxy 127.0.0.1:8000
+}
