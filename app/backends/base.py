@@ -65,6 +65,9 @@ class Backend(abc.ABC):
 
     @property
     def model_type(self) -> str:
+        """Возвращает тип модели: 'audio', если поддерживается аудио, иначе 'image' при поддержке изображений,
+        иначе 'text'.
+        """
         if self.supports_audio:
             return "audio"
         return "image" if self.supports_images else "text"

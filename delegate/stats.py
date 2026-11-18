@@ -14,6 +14,8 @@ CALL_OVERHEAD = 150  # токенов: обёртка tool_use/tool_result, пу
 
 sys.stdout.reconfigure(encoding="utf-8")
 rows = [json.loads(l) for l in LOG.read_text(encoding="utf-8").splitlines() if l.strip()] if LOG.exists() else []
+events = [r for r in rows if "event" in r]  # error / abandoned — сбои, а не выполненные задачи
+rows = [r for r in rows if "event" not in r]
 if not rows:
     sys.exit("Лог пуст: data/delegate_log.jsonl")
 
@@ -27,6 +29,9 @@ for r in rows:
 
 print(f"Вызовов: {len(rows)}  ({', '.join(f'{m}: {n}' for m, n in by_model.items())})")
 print(f"Время локальных моделей: {local_sec / 60:.1f} мин")
+if events:
+    errors = sum(1 for e in events if e["event"] == "error")
+    print(f"Сбоев: ошибок {errors}, результатов, которые агент не забрал, {len(events) - errors}")
 print(f"Без делегирования агент потратил бы ≈ {saved:,.0f} ток.")
 print(f"На делегирование потрачено       ≈ {spent:,.0f} ток.")
 print(f"Чистая экономия                  ≈ {saved - spent:,.0f} ток. ({(1 - spent / saved) * 100 if saved else 0:.0f}%)")

@@ -23,7 +23,7 @@ Claude Code отдаёт через него простые задачи мод�
 | `task` | Инструкция с форматом ответа |
 | `files` | Абсолютные пути; `path:10-80` — диапазон строк |
 | `output_file` | Записать результат в файл (без ```-обёрток); может совпадать с входным — перезапись. Если ответ обрезан по `max_tokens`, файл не пишется |
-| `model` | `code` → qwen3-coder-30b (100k), `text` → qwen3.6-35b (RU), `reason` → gpt-oss-20b, или точное имя. По умолчанию — **уже активная** модель (без переключения GPU) |
+| `model` | `code` → gpt-oss-20b (100k), `text` → qwen3.6-35b (RU), `reason` → gpt-oss-20b, или точное имя. По умолчанию — **уже активная** модель (без переключения GPU) |
 | `compact` | Сжатие входа: `light` (по умолчанию — хвостовые пробелы, лишние пустые строки, повторы, строки длиннее 2000 симв.), `logs` (+ схлопывание строк, отличающихся только числами/временем), `none`. С `output_file` всегда `none` |
 | `line_numbers` | Пронумеровать строки входа (для задач «где находится X») |
 | `max_tokens` | Лимит ответа (100000; без `output_file`) |
@@ -48,9 +48,19 @@ Claude Code отдаёт через него простые задачи мод�
 
 Таймауты очереди AI Manager — `DELEGATE_TIMEOUT` (выполнение, 3600 с на запрос) и
 `DELEGATE_WAIT_TIMEOUT` (ожидание в очереди, 3600 с); при нарезке лимит действует на каждую часть.
-Пока модель работает, сервер каждые 15 с шлёт `notifications/progress` (если клиент передал
-`progressToken`) — клиенты, сбрасывающие таймаут по прогрессу, не обрывают долгий вызов.
-Для Claude Code таймаут инструмента MCP задаётся переменной `MCP_TOOL_TIMEOUT` (мс) при запуске `claude`.
+Claude Code обрывает вызов инструмента примерно через 60 с, и прогресс этот таймаут не сбрасывает.
+Раньше это давало «таймаут» у агента, хотя модель отвечала через 1–3 минуты, а повтор вставал
+в очередь за брошенной копией. Поэтому задача выполняется в фоновом потоке сервера:
+
+- `local_llm` ждёт не дольше `DELEGATE_SYNC_WAIT` (40 с). Не успела — возвращает
+  `running: job_id=…`, задача продолжается.
+- `local_llm_wait(job_id)` ждёт ещё до 40 с и отдаёт результат или снова `running`.
+- Повторный `local_llm` с теми же аргументами подключается к идущей (или готовой, но не забранной)
+  задаче, а не ставит вторую копию в очередь.
+- Готовый результат хранится `DELEGATE_JOB_TTL` (3600 с). Ошибки и незабранные результаты
+  пишутся в лог (`event: error / abandoned`), `stats.py` показывает их отдельно.
+
+Пока вызов ждёт, сервер каждые 15 с шлёт `notifications/progress` (если клиент передал `progressToken`).
 
 Задачи идут через очередь AI Manager с проектом `claude-delegate` (видны в `GET /api/queue`).
 
@@ -66,7 +76,8 @@ claude mcp add -s user ai-manager-delegate -- D:\projects\AI_Manager\venv\Script
 Настройки (переменные окружения или `.env` AI Manager): `DELEGATE_AIM_URL`,
 `DELEGATE_DEFAULT_MODEL`, `DELEGATE_CODE_MODEL`, `DELEGATE_TEXT_MODEL`, `DELEGATE_REASON_MODEL`,
 `DELEGATE_TIMEOUT` (сек, 3600), `DELEGATE_WAIT_TIMEOUT` (сек, 3600), `DELEGATE_MAX_TOKENS` (100000),
-`DELEGATE_MAX_CHUNKS` (24), `DELEGATE_LONG_LINE` (2000), `DELEGATE_PROJECT`. Пароль — `AIM_PASSWORD` из `.env`.
+`DELEGATE_MAX_CHUNKS` (24), `DELEGATE_LONG_LINE` (2000), `DELEGATE_SYNC_WAIT` (40),
+`DELEGATE_JOB_TTL` (3600), `DELEGATE_PROJECT`. Пароль — `AIM_PASSWORD` из `.env`.
 
 ## Статистика
 

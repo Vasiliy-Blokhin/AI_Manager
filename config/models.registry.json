@@ -1,24 +1,6 @@
 {
   "models": [
     {
-      "name": "qwen25-coder-14b-unc",
-      "backend": "llama_server",
-      "model_ref": "bartowski/Qwen2.5-Coder-14B-Instruct-abliterated-GGUF:Qwen2.5-Coder-14B-Instruct-abliterated-Q4_K_M.gguf",
-      "display_name": "Qwen2.5-Coder-14B (unc)",
-      "description": "Код: Python/JS, без цензуры (abliterated)",
-      "ngl": 99,
-      "context": 100000
-    },
-    {
-      "name": "qwen3-coder-30b-a3b-instruct",
-      "backend": "llama_server",
-      "model_ref": "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Qwen3-Coder-30B-A3B-Instruct-UD-Q4_K_XL.gguf",
-      "display_name": "Qwen3-Coder-30B-A3B-Instruct",
-      "description": "Код: Python/JS (MoE 30B/3.3B active)",
-      "ngl": 99,
-      "context": 100000
-    },
-    {
       "name": "gpt-oss-20b",
       "backend": "llama_server",
       "model_ref": "unsloth/gpt-oss-20b-GGUF:gpt-oss-20b-UD-Q4_K_XL.gguf",
@@ -35,6 +17,8 @@
         "2048",
         "--load-mode",
         "none",
+        "--fit-target",
+        "3072",
         "--jinja"
       ],
       "env": {
@@ -43,7 +27,7 @@
       "request_defaults": {
         "reasoning_effort": "low"
       },
-      "_comment": "ngl=null: llama-server сам подбирает выгрузку под VRAM (--fit, часть MoE-экспертов на CPU). DISABLE_HOST_VISIBLE_VIDMEM — обход выключенного Resizable BAR: prefill 36 -> ~800-1600 ток/с. ub=2048 — быстрый prefill. 1 слот — весь контекст одному пользователю, кэш промпта не вытесняется."
+      "_comment": "ngl=null: llama-server сам подбирает выгрузку под VRAM (--fit, часть MoE-экспертов на CPU). DISABLE_HOST_VISIBLE_VIDMEM — обход выключенного Resizable BAR: prefill 36 -> ~800-1600 ток/с. ub=2048 — быстрый prefill. --fit-target 3072: при запасе по умолчанию 1 ГБ Windows вытесняет часть буферов из VRAM в RAM — prefill 136 / decode 8.6 ток/с вместо 1101 / 20.7 (замер 18.10.2026). 1 слот — весь контекст одному пользователю, кэш промпта не вытесняется."
     },
     {
       "name": "qwen36-35b-a3b",
@@ -77,35 +61,11 @@
       "mmproj": "mmproj-F16.gguf"
     },
     {
-      "name": "qwen25-14b-unc-russian",
-      "backend": "llama_server",
-      "model_ref": "bartowski/Qwen2.5-14B_Uncensored_Instruct-GGUF:Qwen2.5-14B_Uncensored_Instruct-Q4_K_M.gguf",
-      "display_name": "Qwen2.5-14B Uncensored",
-      "description": "Текст, в т.ч. русский, без цензуры",
-      "ngl": 99,
-      "context": 100000
-    },
-    {
       "name": "dreamshaper-8",
       "backend": "openvino_sd",
       "model_ref": "Lykon/dreamshaper-8",
       "display_name": "DreamShaper 8",
       "description": "Генерация изображений по запросу (SD 1.5)"
-    },
-    {
-      "name": "flux1-schnell-ov",
-      "backend": "openvino_sd",
-      "model_ref": "OpenVINO/FLUX.1-schnell-int8-ov",
-      "display_name": "FLUX.1-schnell INT8 (CPU)",
-      "description": "Изображения высшего качества, но только на CPU (~6 мин/кадр 640px): в 12 ГБ VRAM не помещается. Для обложек/аватарок",
-      "default_steps": 4,
-      "default_guidance": 0.0,
-      "max_side": 1536,
-      "devices": {
-        "text_encoder": "CPU",
-        "denoise": "CPU",
-        "vae": "CPU"
-      }
     },
     {
       "name": "qwen3-tts",
@@ -118,55 +78,6 @@
       "env": {
         "GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM": "1"
       }
-    },
-    {
-      "name": "flux1-schnell-int4-ov",
-      "backend": "openvino_sd",
-      "model_ref": "OpenVINO/FLUX.1-schnell-int4-ov",
-      "display_name": "FLUX.1-schnell INT4 (GPU)",
-      "description": "Изображения для конвейера: трансформер 6.4 ГБ на GPU, T5 на CPU. Apache 2.0",
-      "devices": {
-        "text_encoder": "CPU",
-        "denoise": "GPU",
-        "vae": "GPU"
-      },
-      "default_steps": 4,
-      "default_guidance": 0.0,
-      "max_side": 1536
-    },
-    {
-      "name": "sdxl-base-int8-ov",
-      "backend": "openvino_sd",
-      "model_ref": "OpenVINO/stable-diffusion-xl-base-1.0-int8-ov",
-      "display_name": "SDXL 1.0 INT8 (GPU, VAE на CPU)",
-      "description": "Основная модель картинок без Resizable BAR: ~30 с/кадр 1344×768. VAE на CPU — иначе fp16 даёт чёрный кадр",
-      "default_steps": 30,
-      "default_guidance": 6.0,
-      "max_side": 1536,
-      "engine": "genai",
-      "devices": {
-        "text_encoder": "GPU",
-        "denoise": "GPU",
-        "vae": "CPU"
-      },
-      "_comment": "FLUX на Arc B580 без ReBAR не работает: fp16 даёт шум, f32 — 25+ мин/кадр; на CPU — 8 мин/кадр"
-    },
-    {
-      "name": "realvisxl-v5-ov",
-      "backend": "openvino_sd",
-      "model_ref": "SG161222/RealVisXL_V5.0",
-      "display_name": "RealVisXL V5.0 FP16 (GPU, VAE на CPU)",
-      "description": "Фотореалистичный SDXL (OpenRAIL++, коммерция разрешена): заметно реалистичнее базового SDXL INT8. Веса FP16 без квантования",
-      "default_steps": 30,
-      "default_guidance": 5.0,
-      "max_side": 1536,
-      "engine": "genai",
-      "devices": {
-        "text_encoder": "GPU",
-        "denoise": "GPU",
-        "vae": "CPU"
-      },
-      "_comment": "Готовой OpenVINO-сборки нет: конвертируется скриптом scripts/convert_realvisxl.py в кэш realvisxl-v5-ov (install() скачал бы сырые diffusers-веса)"
     }
   ]
 }

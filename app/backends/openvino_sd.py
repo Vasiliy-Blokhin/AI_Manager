@@ -33,6 +33,10 @@ from .base import Backend, BackendError, StartInfo, download_with_retries
 
 
 class OpenVinoSdBackend(Backend):
+    """Класс OpenVinoSdBackend реализует работу с моделями Stable Diffusion через OpenVINO. Он управляет
+    загрузкой, кэшированием, выбором движка (genai/optimum) и жизненным циклом пайплайна; генерирует
+    изображения по тексту и по исходной картинке (img2img).
+    """
     backend_name = "openvino_sd"
     supports_images = True
 
@@ -54,6 +58,7 @@ class OpenVinoSdBackend(Backend):
         return (self.cache_dir / "model_index.json").exists()
 
     def install(self) -> None:
+        """Устанавливает модель, создавая кэш‑директорию и скачивая репозиторий из HuggingFace."""
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         from huggingface_hub import snapshot_download
         download_with_retries(
@@ -65,6 +70,7 @@ class OpenVinoSdBackend(Backend):
 
     # --- жизненный цикл (пайплайн в памяти процесса сервиса, GPU освобождается при stop) ---
     def start(self) -> StartInfo:
+        """Запускает пайплайн, выбирая движок (genai/optimum) и возвращает информацию о процессе."""
         if not self.is_installed():
             raise BackendError(f"Модель {self.entry.model_ref} не установлена. Сначала выполните install.")
         engine = self.entry.extra.get("engine") or ("genai" if self._converted() else "optimum")
@@ -76,6 +82,7 @@ class OpenVinoSdBackend(Backend):
         return StartInfo(pid=0, endpoint=f"in-process ({engine})")
 
     def _start_genai(self):
+        """Инициализирует пайплайн openvino-genai, настраивая устройства и компилируя модель."""
         try:
             import openvino_genai as ov_genai
         except ImportError as e:
@@ -110,6 +117,7 @@ class OpenVinoSdBackend(Backend):
         return self._i2i
 
     def _start_optimum(self):
+        """Загружает OVDiffusionPipeline из optimum‑intel, экспортируя при необходимости и размещая на GPU."""
         try:
             from optimum.intel import OVDiffusionPipeline
         except ImportError as e:
@@ -126,6 +134,7 @@ class OpenVinoSdBackend(Backend):
             raise BackendError(f"Не удалось загрузить пайплайн на GPU: {e}")
 
     def stop(self) -> None:
+        """Останавливает пайплайн, очищая ресурсы и вызывая сборщик мусора."""
         self._pipe = None
         self._i2i = None
         self._engine = None
@@ -172,6 +181,9 @@ class OpenVinoSdBackend(Backend):
         )
 
     def _generate_genai(self, request: ImageRequest, guidance):
+        """Генерирует изображение с помощью genai, поддерживая init‑image, guidance, negative prompt и другие
+        параметры.
+        """
         from PIL import Image
         kwargs = dict(width=request.width, height=request.height, num_inference_steps=request.steps)
         if request.seed is not None:
@@ -208,6 +220,9 @@ class OpenVinoSdBackend(Backend):
         return cb
 
     def _run(self, generate, *args, **kwargs):
+        """Выполняет генерацию, пытаясь использовать callback для прогресса. Если callback недоступен,
+        генерирует без него.
+        """
         if self._callback_ok:
             try:
                 return generate(*args, callback=self._step_callback(), **kwargs)
@@ -218,6 +233,9 @@ class OpenVinoSdBackend(Backend):
         return generate(*args, **kwargs)
 
     def _generate_optimum(self, request: ImageRequest, guidance):
+        """Генерирует изображение с заданными параметрами (seed, prompt, steps, размеры, guidance). Возвращает
+        первое изображение из результата пайпа.
+        """
         import torch
         generator = torch.Generator().manual_seed(request.seed) if request.seed is not None else None
         kwargs = dict(prompt=request.prompt, num_inference_steps=request.steps,

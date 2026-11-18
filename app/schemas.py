@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, field_validator, ConfigDict
 
 
 class Message(BaseModel):
+    """Определяет структуру сообщения с ролью и содержимым."""
     role: Literal["system", "user", "assistant"]
     content: str
 
@@ -42,6 +43,7 @@ class ImageRequest(BaseModel):
     @field_validator("width", "height")
     @classmethod
     def _multiple_of_64(cls, v: int) -> int:
+        """Проверяет, что значение кратно 64 и находится в диапазоне 256..1536."""
         if v % 64 != 0:
             raise ValueError("width/height должны быть кратны 64")
         if not 256 <= v <= 1536:
@@ -63,6 +65,7 @@ class TTSRequest(BaseModel):
 
 
 class Usage(BaseModel):
+    """Содержит статистику токенов запроса и ответа."""
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
@@ -99,6 +102,9 @@ class TTSResponse(BaseModel):
 
 
 class ModelInfo(BaseModel):
+    """Описание модели: имя, backend, отображаемое имя, описание, тип, статус установки и запуска, PID и
+    endpoint.
+    """
     name: str
     backend: str
     display_name: str = ""
@@ -111,31 +117,38 @@ class ModelInfo(BaseModel):
 
 
 class ModelListResponse(BaseModel):
+    """Ответ со списком моделей и активной моделью."""
     active: Optional[str] = None
     models: List[ModelInfo]
 
 
 class InstallRequest(BaseModel):
+    """Запрос установки модели по имени."""
     name: str
 
 
 class InstallResponse(BaseModel):
+    """Ответ о результате установки: имя, установлен ли сейчас, и был ли ранее установлен."""
     name: str
     installed: bool
     was_installed: bool
 
 
 class StartResponse(BaseModel):
+    """Ответ при запуске модели: имя, статус запуска и список остановленных моделей."""
     name: str
     running: bool
     stopped: List[str] = Field(default_factory=list)
 
 
 class StopResponse(BaseModel):
+    """Ответ при остановке модели: имя запущенной модели, если есть."""
     running: Optional[str] = None
 
 
 class StatusResponse(BaseModel):
+    """Общая статистика сервиса: активная модель, тип, количества моделей, очереди и блокировка переключения.
+    """
     service: str = "ai-manager"
     active: Optional[str] = None
     active_type: Optional[str] = None
@@ -148,9 +161,11 @@ class StatusResponse(BaseModel):
 
 
 class ErrorBody(BaseModel):
+    """Тело ошибки с кодом и сообщением."""
     code: str
     message: str
 
 
 class ErrorResponse(BaseModel):
+    """Ответ об ошибке, содержащий ErrorBody."""
     error: ErrorBody

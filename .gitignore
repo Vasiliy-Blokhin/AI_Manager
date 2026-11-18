@@ -224,3 +224,4 @@ voices/*
 !voices/.gitkeep
 # База задач очереди (SQLite)
 data/
+caddy/duckdns.token

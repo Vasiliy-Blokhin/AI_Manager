@@ -37,6 +37,9 @@ EXIT_CODE = 3
 
 
 def _env_float(name: str, default: float) -> float:
+    """Возвращает значение переменной окружения как float, если возможно, иначе возвращает заданное значение
+    по умолчанию.
+    """
     try:
         return float(os.getenv(name, default))
     except ValueError:
@@ -44,6 +47,12 @@ def _env_float(name: str, default: float) -> float:
 
 
 class Watchdog:
+    """Класс Watchdog реализует мониторинг состояния приложения: периодически проверяет доступность эндпоинта
+    /health, отслеживает «зависание» event loop и при необходимости инициирует перезапуск. Конструктор
+    принимает каталог логов, порт, функцию shutdown и настраивает параметры из переменных окружения. Методы
+    start/stop управляют задачами asyncio и потоками, _heartbeat обновляет таймер, а _monitor осуществляет
+    проверку и перезапуск при превышении hang_timeout или неудачных запросов.
+    """
     def __init__(self, log_dir: Path, port: int, shutdown: Callable[[], None]):
         self.log_dir = log_dir
         self.url = f"http://127.0.0.1:{port}/health"
@@ -60,6 +69,9 @@ class Watchdog:
     # ---------- запуск / остановка ----------
 
     async def start(self) -> None:
+        """Запускает watchdog: инициализирует таймер, создаёт задачу _heartbeat и поток _monitor, выводит лог
+        о режиме работы.
+        """
         if not self.enabled:
             logger.info("Сторож отключён (AIM_WATCHDOG=false)")
             return
@@ -70,11 +82,13 @@ class Watchdog:
                     int(self.hang_timeout), self.probe_fails)
 
     async def stop(self) -> None:
+        """Останавливает watchdog, устанавливая флаг и отменяя задачу _heartbeat."""
         self._stop.set()
         if self._task:
             self._task.cancel()
 
     async def _heartbeat(self) -> None:
+        """Обновляет таймер _beat каждую секунду, чтобы сигнализировать о живом event loop."""
         while True:
             self._beat = time.monotonic()
             await asyncio.sleep(1.0)
@@ -82,6 +96,7 @@ class Watchdog:
     # ---------- проверки ----------
 
     def _probe(self) -> bool:
+        """Проверяет доступность URL, возвращая True при статусе 200, иначе False."""
         try:
             with urllib.request.urlopen(self.url, timeout=10) as r:
                 return r.status == 200
@@ -89,6 +104,9 @@ class Watchdog:
             return False
 
     def _monitor(self) -> None:
+        """Периодически проверяет таймер _beat и выполняет HTTP‑probe; при превышении hang_timeout или
+        количества неудачных проверок инициирует перезапуск.
+        """
         # первая проверка порта — после старта uvicorn (lifespan отработал раньше bind)
         next_probe = time.monotonic() + self.probe_interval
         fails = 0
@@ -111,6 +129,7 @@ class Watchdog:
     # ---------- аварийный перезапуск ----------
 
     def _dump(self, reason: str) -> Optional[Path]:
+        """Сохраняет стек вызовов в лог-файл, возвращая путь к файлу, либо None при ошибке."""
         try:
             self.log_dir.mkdir(parents=True, exist_ok=True)
             path = self.log_dir / f"hang-{datetime.now():%Y%m%d-%H%M%S}.log"
@@ -129,6 +148,9 @@ class Watchdog:
             self._do_restart(reason)
 
     def _do_restart(self, reason: str) -> None:
+        """Записывает стек, логирует причину перезапуска, мягко выгружает модель, затем завершает процесс с
+        кодом EXIT_CODE.
+        """
         path = self._dump(reason)
         msg = f"Сторож: {reason} — перезапуск сервиса (стеки: {path})"
         logger.error(msg)
@@ -146,6 +168,7 @@ class Watchdog:
         os._exit(EXIT_CODE)
 
     def _safe_shutdown(self) -> None:
+        """Пытается корректно остановить модель, логируя любые исключения."""
         try:
             self.shutdown()
         except Exception:

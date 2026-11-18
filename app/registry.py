@@ -9,6 +9,9 @@ from typing import Dict, List
 
 @dataclass
 class ModelEntry:
+    """Класс описывает запись модели: имя, бекенд, ссылка на модель, отображаемое имя, описание и
+    дополнительные параметры.
+    """
     name: str
     backend: str
     model_ref: str
@@ -18,16 +21,23 @@ class ModelEntry:
 
 
 class RegistryError(Exception):
+    """Исключение, генерируемое при ошибках работы реестра (не найден, дубликат, пустой)."""
     pass
 
 
 class Registry:
+    """Управляет загрузкой и хранением моделей из JSON‑файла, обеспечивает доступ к записям и проверку
+    целостности данных.
+    """
     def __init__(self, path: str):
         self.path = path
         self._models: Dict[str, ModelEntry] = {}
         self.reload()
 
     def reload(self) -> None:
+        """Перечитывает файл реестра, создаёт объекты ModelEntry, проверяет дубликаты и пустоту, обновляет
+        внутренний словарь.
+        """
         if not os.path.exists(self.path):
             raise RegistryError(f"Реестр не найден: {self.path}")
         with open(self.path, encoding="utf-8") as f:
@@ -51,6 +61,7 @@ class Registry:
         self._models = models
 
     def get(self, name: str) -> ModelEntry:
+        """Возвращает запись модели по имени, генерирует KeyError, если модель отсутствует."""
         if name not in self._models:
             raise KeyError(name)
         return self._models[name]

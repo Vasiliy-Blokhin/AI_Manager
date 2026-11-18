@@ -12,6 +12,9 @@ from .base import Backend, BackendError, StartInfo
 
 
 class OllamaBackend(Backend):
+    """Класс‑обёртка для взаимодействия с Ollama: управляет установкой модели, проверкой наличия, загрузкой в
+    память и выгрузкой. Возвращает объект StartInfo с pid=0 и endpoint‑URL.
+    """
     backend_name = "ollama"
 
     def __init__(self, entry: ModelEntry, settings: dict):
@@ -20,6 +23,9 @@ class OllamaBackend(Backend):
 
     # --- установка ---
     def _tags(self) -> set:
+        """Получает список доступных моделей из Ollama, возвращает их имена в виде множества. При ошибке
+        генерирует BackendError.
+        """
         try:
             r = httpx.get(f"{self.base_url}/api/tags", timeout=10)
             r.raise_for_status()
@@ -32,6 +38,7 @@ class OllamaBackend(Backend):
         return any(t == ref or t.startswith(ref + ":") for t in self._tags())
 
     def install(self) -> None:
+        """Выполняет скачивание модели Ollama; при ошибке генерирует BackendError."""
         proc = subprocess.run(
             ["ollama", "pull", self.entry.model_ref],
             capture_output=True, text=True,
@@ -41,6 +48,9 @@ class OllamaBackend(Backend):
 
     # --- жизненный цикл ---
     def start(self) -> StartInfo:
+        """Подготавливает модель к работе, отправляя короткий запрос; возвращает объект StartInfo с
+        endpoint‑ом.
+        """
         if not self.is_installed():
             raise BackendError(f"Модель {self.entry.model_ref} не установлена. Сначала выполните install.")
         # Ollama не держит отдельный процесс на модель: прогреваем её
@@ -58,6 +68,7 @@ class OllamaBackend(Backend):
         return StartInfo(pid=0, endpoint=self.base_url)  # pid 0 = управляется Ollama
 
     def stop(self) -> None:
+        """Пытается выгрузить модель из памяти Ollama, игнорируя ошибки."""
         try:
             httpx.post(f"{self.base_url}/api/generate",
                        json={"model": self.entry.model_ref, "keep_alive": 0}, timeout=30)
@@ -65,6 +76,7 @@ class OllamaBackend(Backend):
             pass  # выгрузка — best effort
 
     def is_running(self) -> bool:
+        """Проверяет доступность модели, отправляя запрос; возвращает True при статусе 200, иначе False."""
         try:
             r = httpx.post(
                 f"{self.base_url}/api/chat",
@@ -82,6 +94,8 @@ class OllamaBackend(Backend):
 
     # --- инференс ---
     def chat(self, request: ChatRequest) -> ChatResponse:
+        """Отправляет запрос к Ollama, обрабатывает ответ и возвращает ChatResponse с токенами и содержимым.
+        """
         payload = {
             "model": self.entry.model_ref,
             "messages": [m.model_dump() for m in request.messages],

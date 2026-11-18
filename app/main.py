@@ -57,6 +57,7 @@ logger = logging.getLogger(__name__)
 
 
 def _lan_ip() -> str:
+    """Определяет локальный IP‑адрес, подключаясь к публичному серверу; при ошибке возвращает 127.0.0.1."""
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
@@ -68,6 +69,7 @@ def _lan_ip() -> str:
 
 
 def _public_origin() -> str:
+    """Формирует базовый URL из переменных окружения, используя локальный IP при необходимости."""
     host = os.getenv("AIM_PUBLIC_HOST", "").strip()
     if not host:
         host = os.getenv("AIM_HOST", "127.0.0.1").strip() or "127.0.0.1"
@@ -77,6 +79,7 @@ def _public_origin() -> str:
 
 
 def _settings() -> dict:
+    """Собирает конфигурацию из переменных окружения: пути, порты, таймауты, параметры GPU и кэш."""
     lo, _, hi = os.getenv("AIM_PORT_RANGE", "8100-8199").partition("-")
     hf_cache = os.path.expandvars(os.getenv("AIM_HF_CACHE", "~/.cache/ai-manager"))
     os.environ.setdefault("HF_HOME", str(Path(hf_cache).expanduser()))
@@ -101,6 +104,9 @@ def _settings() -> dict:
         # задач к другим моделям, после которого удержание не даётся
         "sticky_sec": float(os.getenv("AIM_STICKY_SEC", "20")),
         "sticky_max_sec": float(os.getenv("AIM_STICKY_MAX_SEC", "180")),
+        # После остановки модели ждём, пока занятая VRAM упадёт до этого уровня (МБ) или перестанет
+        # снижаться (не дольше 30 с): иначе следующая модель ловит нехватку памяти/зависание; 0 — не ждать
+        "vram_idle_mb": float(os.getenv("AIM_VRAM_IDLE_MB", "1536")),
     }
 
 
@@ -123,6 +129,9 @@ orphans = OrphanSweeper(float(os.getenv("AIM_ORPHAN_INTERVAL", "300")))
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Инициализирует и завершает работу приложения: устанавливает бэкенды, запускает очереди и watchdog,
+    затем останавливает их.
+    """
     auto = os.getenv("AIM_AUTO_INSTALL", "false").lower() in ("1", "true", "yes")
     for entry in registry.all():
         try:
@@ -153,6 +162,9 @@ app.add_middleware(
 
 
 def _provided_password(request: Request) -> str:
+    """Извлекает пароль из заголовков X-API-Password или Bearer Authorization, возвращая пустую строку, если
+    не найден.
+    """
     header = request.headers.get("X-API-Password", "")
     if header:
         return header
@@ -164,6 +176,7 @@ def _provided_password(request: Request) -> str:
 
 @app.middleware("http")
 async def password_middleware(request: Request, call_next):
+    """Проверяет пароль для API‑путей, возвращая 401 при неверном значении."""
     if request.url.path.startswith("/api/") or request.url.path.startswith("/v1/"):
         provided = _provided_password(request)
         if not hmac.compare_digest(provided.encode(), PASSWORD.encode()):
@@ -192,6 +205,7 @@ def list_models():
 
 @app.get("/api/models/{name}", response_model=ModelInfo)
 def get_model(name: str):
+    """Возвращает объект модели по имени из реестра, иначе генерирует ошибку 404."""
     for m in manager.list_models():
         if m.name == name:
             return m
@@ -200,6 +214,7 @@ def get_model(name: str):
 
 @app.post("/api/models/install", response_model=InstallResponse)
 def install(req: InstallRequest):
+    """Устанавливает модель, обрабатывая ошибки модели и бэкенда, возвращая ответ установки."""
     try:
         return InstallResponse(**manager.install(req.name))
     except ModelNotFoundError:
@@ -235,6 +250,8 @@ async def stop():
 
 @app.get("/api/status", response_model=StatusResponse)
 async def status():
+    """Получает статус менеджера и снимок очереди, формируя ответ с количеством запущенных и ожидающих задач.
+    """
     st = await run_in_threadpool(manager.status)
     snap = queue.snapshot()
     return StatusResponse(**st, queue_running=len(snap["running"]),
@@ -253,6 +270,9 @@ async def _queued(request: Request, kind: str, model: Optional[str], summary: st
 
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest, request: Request, response: Response):
+    """Обрабатывает чат‑запрос, формирует payload, ставит задачу в очередь и возвращает результат с
+    использованием backend‑а.
+    """
     if req.stream:
         raise _err("unsupported", "stream=true не поддерживается в /api/chat — используйте /v1/chat/completions", 400)
     payload = {"messages": [m.model_dump() for m in req.messages], "temperature": req.temperature}
@@ -268,6 +288,7 @@ async def chat(req: ChatRequest, request: Request, response: Response):
 
 @app.post("/api/image", response_model=ImageResponse)
 async def image(req: ImageRequest, request: Request, response: Response):
+    """Обрабатывает запрос генерации изображения, ставит задачу в очередь и возвращает результат."""
     with http_errors():
         t = await _queued(request, "image", req.model, req.prompt)
         response.headers["X-Job-Id"] = t.id
@@ -277,6 +298,7 @@ async def image(req: ImageRequest, request: Request, response: Response):
 
 @app.post("/api/tts", response_model=TTSResponse)
 async def tts(req: TTSRequest, request: Request, response: Response):
+    """Обрабатывает запрос синтеза речи, ставит задачу в очередь и возвращает результат."""
     with http_errors():
         t = await _queued(request, "tts", req.model, req.text)
         response.headers["X-Job-Id"] = t.id
@@ -312,6 +334,7 @@ def restart_service(force: bool = False):
         result["git"] = {"ok": False, "output": str(e)}
 
     def _delayed_restart():
+        """Пауза 1.5 с, затем завершает процесс с SIGTERM (или _exit) для перезапуска."""
         time.sleep(1.5)
         logger.info("Перезапуск AI Manager (PID %s)...", os.getpid())
         if hasattr(signal, "SIGTERM"):
@@ -336,6 +359,7 @@ async def http_exc_handler(request: Request, exc: HTTPException):
 
 @app.exception_handler(ValidationError)
 async def validation_exc_handler(request: Request, exc: ValidationError):
+    """Обрабатывает ValidationError, возвращая 400 с описанием ошибок."""
     return JSONResponse(status_code=400,
                         content={"error": {"code": "bad_request",
                                            "message": exc.errors(include_url=False).__str__()[:500]}})

@@ -116,12 +116,14 @@ class JobStore:
             self._db.execute("ALTER TABLE jobs ADD COLUMN restarts INTEGER NOT NULL DEFAULT 0")
 
     def create(self, **fields: Any) -> None:
+        """Создаёт новую запись в таблице jobs, передавая поля как параметры SQL."""
         cols = ", ".join(fields)
         marks = ", ".join("?" for _ in fields)
         with self._lock:
             self._db.execute(f"INSERT INTO jobs ({cols}) VALUES ({marks})", tuple(fields.values()))
 
     def update(self, job_id: str, **fields: Any) -> None:
+        """Обновляет существующую запись jobs, если переданы поля; игнорирует пустой запрос."""
         if not fields:
             return
         sets = ", ".join(f"{k} = ?" for k in fields)
@@ -129,6 +131,9 @@ class JobStore:
             self._db.execute(f"UPDATE jobs SET {sets} WHERE id = ?", (*fields.values(), job_id))
 
     def get(self, job_id: str, with_result: bool = True) -> Optional[dict]:
+        """Возвращает словарь с данными задачи по id; при with_result=True включаются все колонки, иначе
+        только список _LIST_COLUMNS.
+        """
         cols = "*" if with_result else _LIST_COLUMNS
         with self._lock:
             row = self._db.execute(f"SELECT {cols} FROM jobs WHERE id = ?", (job_id,)).fetchone()
@@ -136,6 +141,9 @@ class JobStore:
 
     def list(self, status: Optional[str] = None, project: Optional[str] = None,
              model: Optional[str] = None, limit: int = 100) -> List[dict]:
+        """Возвращает список задач, отфильтрованных по статусу, проекту и модели, упорядоченных по дате
+        создания, ограниченных limit.
+        """
         where, args = [], []
         for col, val in (("project", project), ("model", model)):
             if val:
@@ -184,6 +192,7 @@ class JobStore:
         return [_row(r) for r in rows]
 
     def cleanup(self, retention_days: float) -> int:
+        """Удаляет завершённые задачи старше retention_days; возвращает количество удалённых записей."""
         cutoff = time.time() - retention_days * 86400
         with self._lock:
             cur = self._db.execute(
@@ -197,6 +206,9 @@ class JobStore:
 
 
 def _row(row: sqlite3.Row) -> dict:
+    """Преобразует sqlite3.Row в dict, декодируя JSON‑строки для usage, payload и result, и преобразует stream
+    в bool.
+    """
     d = dict(row)
     for key in ("usage", "payload", "result"):
         if d.get(key):
@@ -273,6 +285,9 @@ class JobQueue:
         self._executors[kind] = fn
 
     async def start(self) -> None:
+        """Запускает обработку очереди: очищает старые задачи, восстанавливает незавершённые, создаёт
+        watchdog‑задачу.
+        """
         removed = self.store.cleanup(self.retention_days)
         if removed:
             logger.info("Очередь: удалено старых задач: %d", removed)
@@ -286,6 +301,9 @@ class JobQueue:
         self._watchdog = asyncio.create_task(self._watch())
 
     async def stop(self) -> None:
+        """Останавливает watchdog, посылает запросы остановки всем активным задачам и отменяет асинхронные
+        задачи.
+        """
         if self._watchdog:
             self._watchdog.cancel()
         for t in list(self._waiting) + list(self._running.values()):
@@ -302,6 +320,7 @@ class JobQueue:
         return self.manager.active_name()
 
     def _model_type(self, name: str) -> Optional[str]:
+        """Определяет тип модели по имени, возвращая None при ошибке."""
         try:
             return self.manager._backend_for(self.manager.registry.get(name)).model_type
         except Exception:
@@ -349,6 +368,7 @@ class JobQueue:
     # ---------- жизненный цикл задачи ----------
 
     def _clamp(self, value: Optional[float], default: float) -> float:
+        """Ограничивает значение timeout до MAX_TIMEOUT, возвращая default при None или <=0."""
         if value is None or value <= 0:
             return default
         return min(float(value), MAX_TIMEOUT)
@@ -466,6 +486,7 @@ class JobQueue:
         t.threads += 1
 
         def _done() -> None:
+            """Уменьшает счётчик потоков задачи; при нуле вызывает финализацию."""
             t.threads -= 1
             if t.released:
                 self._finalize(t)
@@ -502,6 +523,7 @@ class JobQueue:
         self._finalize(t)
 
     def _finalize(self, t: Ticket) -> None:
+        """Завершает задачу, удаляя её из очередей и планируя новые задачи."""
         if t.finalized or t.threads > 0:
             return
         t.finalized = True
@@ -514,6 +536,7 @@ class JobQueue:
     # ---------- отмена ----------
 
     def _request_stop(self, t: Ticket, reason: JobCancelled) -> None:
+        """Устанавливает причину остановки и сигнализирует о прерывании работы, если задача ещё активна."""
         if t.stop_reason or t.released:
             return
         t.stop_reason = reason
@@ -584,6 +607,7 @@ class JobQueue:
         return False
 
     def _backend(self, model: str):
+        """Возвращает объект бэкенда для модели, либо None при ошибке."""
         try:
             return self.manager._backend_for(self.manager.registry.get(model))
         except Exception:
@@ -617,12 +641,17 @@ class JobQueue:
     # ---------- планировщик ----------
 
     def _grant(self, t: Ticket) -> None:
+        """Перемещает билет из очереди ожидания в запущенные, помечает как активный и сигнализирует о доступе.
+        """
         self._waiting.remove(t)
         self._running[t.id] = t
         t.running = True
         t.granted.set()
 
     def _schedule(self) -> None:
+        """Определяет, какие задачи можно запустить, учитывая текущую модель, свободные слоты и правила
+        удержания.
+        """
         if self._maintenance:
             return
         pending = [t for t in self._waiting if not t.stop_requested]
@@ -709,6 +738,7 @@ class JobQueue:
 
     def submit(self, *, kind: str, model: str, project: str, payload: dict, summary: str = "",
                wait_timeout: Optional[float] = None, run_timeout: Optional[float] = None) -> Ticket:
+        """Создаёт новый билет, запускает асинхронную задачу и возвращает объект Ticket."""
         if kind not in self._executors:
             raise ValueError(f"Неизвестный вид задачи: {kind}")
         t = self.new_ticket(kind=kind, model=model, project=project, summary=summary,
@@ -717,6 +747,7 @@ class JobQueue:
         return t
 
     def _spawn_async(self, job: dict) -> None:
+        """Инициализирует билет из внешнего задания, корректирует таймаут и запускает асинхронный процесс."""
         elapsed = max(0.0, time.time() - job["created_at"])
         t = self.new_ticket(kind=job["kind"], model=job["model"], project=job["project"],
                             wait_timeout=job["wait_timeout"], run_timeout=job["run_timeout"],
@@ -725,6 +756,9 @@ class JobQueue:
         self._async_tasks[t.id] = asyncio.create_task(self._run_async(t, job.get("payload") or {}))
 
     async def _run_async(self, t: Ticket, payload: dict) -> None:
+        """Управляет выполнением задачи: захват ресурсов, запуск, обработка результатов и освобождение
+        ресурсов, включая обработку ошибок.
+        """
         try:
             await self.acquire(t)
         except BaseException:
@@ -746,9 +780,15 @@ class JobQueue:
     # ---------- обзор ----------
 
     def snapshot(self) -> dict:
+        """Создаёт словарь со статусом всех задач: активный, текущий, удержание, блокировка переключения,
+        обслуживание, работающие, ожидающие и их позиции.
+        """
         now = time.monotonic()
 
         def brief(t: Ticket) -> dict:
+            """Формирует краткую информацию о задаче: id, тип, модель, проект, возраст, оставшееся время и
+            статус остановки, если применимо.
+            """
             d = {"id": t.id, "kind": t.kind, "model": t.model, "project": t.project,
                  "age_sec": round(now - t.created, 1)}
             if t.deadline is not None:
@@ -777,6 +817,7 @@ class JobQueue:
         }
 
     def position(self, job_id: str) -> Optional[int]:
+        """Возвращает позицию задачи в очереди ожидания (1‑based) или None, если задача не найдена."""
         waiting = [t for t in self._waiting if not t.stop_requested]
         for i, t in enumerate(waiting):
             if t.id == job_id:

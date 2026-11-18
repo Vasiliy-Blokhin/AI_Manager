@@ -32,20 +32,20 @@
 {
   "models": [
     {
-      "name": "qwen25-coder-14b-unc",
+      "name": "gpt-oss-20b",
       "backend": "llama_server",
-      "model_ref": "bartowski/Qwen2.5-Coder-14B-Instruct-abliterated-GGUF:Qwen2.5-Coder-14B-Instruct-abliterated-Q4_K_M.gguf",
-      "display_name": "Qwen2.5-Coder-14B (unc)",
-      "description": "Код: Python/JS, без цензуры (abliterated)",
-      "ngl": 99, "context": 16384
+      "model_ref": "unsloth/gpt-oss-20b-GGUF:gpt-oss-20b-UD-Q4_K_XL.gguf",
+      "display_name": "GPT-OSS-20B",
+      "description": "Код/агент: MoE 20.9B/3.6B active, reasoning",
+      "ngl": null, "context": 100000
     },
     {
-      "name": "qwen25-14b-unc-russian",
+      "name": "qwen36-35b-a3b",
       "backend": "llama_server",
-      "model_ref": "bartowski/Qwen2.5-14B_Uncensored_Instruct-GGUF:Qwen2.5-14B_Uncensored_Instruct-Q4_K_M.gguf",
-      "display_name": "Qwen2.5-14B Uncensored",
-      "description": "Текст, в т.ч. русский, без цензуры",
-      "ngl": 99, "context": 16384
+      "model_ref": "unsloth/Qwen3.6-35B-A3B-GGUF:Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+      "display_name": "Qwen3.6-35B-A3B",
+      "description": "Текст (лучший русский): статьи, посты, сценарии",
+      "ngl": null, "context": 100000
     },
     {
       "name": "dreamshaper-8",
@@ -125,12 +125,12 @@
 
 ```json
 {
-  "active": "qwen25-coder-14b-unc",
+  "active": "gpt-oss-20b",
   "models": [
     {
-      "name": "qwen25-coder-14b-unc",
+      "name": "gpt-oss-20b",
       "backend": "llama_server",
-      "display_name": "Qwen2.5-Coder-14B (unc)",
+      "display_name": "GPT-OSS-20B",
       "type": "text",
       "installed": true,
       "running": true,
@@ -151,7 +151,7 @@
 #### POST /api/models/{name}/start — ответ 200
 
 ```json
-{"name": "qwen25-coder-14b-unc", "running": true, "stopped": ["qwen25-14b-unc-russian"]}
+{"name": "gpt-oss-20b", "running": true, "stopped": ["qwen36-35b-a3b"]}
 ```
 
 Ошибки: `404` не в реестре, `409` не установлена, `409 model_busy` — по активной
@@ -180,7 +180,7 @@
 
 ```json
 {
-  "model": "qwen25-coder-14b-unc",
+  "model": "gpt-oss-20b",
   "backend": "llama_server",
   "content": "Привет! Чем помочь?",
   "usage": {"prompt_tokens": 25, "completion_tokens": 8, "total_tokens": 33}
@@ -335,6 +335,9 @@
   health-check `GET /health` (таймаут 10 мин). Команда запуска пишется в лог
   `logs/llama-server-<name>.log`.
 - Остановка: `SIGTERM` → через 15 с `kill`; освобождает VRAM (инвариант I1).
+- Нехватка VRAM при старте: если процесс завершился сразу и в новой части лога есть
+  `ErrorOutOfDeviceMemory` / `failed to allocate` (`_out_of_vram`), бэкенд ждёт освобождения
+  видеопамяти (до 60 с) и повторяет запуск — не больше 2 раз; затем ошибка `BackendError`.
 - Запрос: `POST /v1/chat/completions` (OpenAI-совместимый).
 - GPU: сборки `win-vulkan-x64` (по умолчанию) или `win-sycl-x64` (нужен oneAPI),
   путь через `LLAMA_SERVER_BIN`. Процесс наследует окружение — переменные
@@ -373,6 +376,15 @@ not_installed --install--> installed --start--> running --stop--> installed
 running --start другой модели--> stopped (автоматически, I1)
 ```
 
+**Ожидание освобождения VRAM (`app/gpu_mem.py`).** Драйвер Intel Arc освобождает видеопамять
+остановленного процесса не сразу; модель, стартующая вплотную, зависала (генерация SD на шаге 2/25)
+или падала с нехваткой памяти. Поэтому после каждой остановки (`ModelManager._stop_active_locked`)
+вызывается `wait_vram_released(AIM_VRAM_IDLE_MB)`: занятость читается из счётчика Windows
+`\GPU Adapter Memory(*)\Dedicated Usage` (PDH через ctypes) раз в секунду, ожидание заканчивается,
+когда занято не больше `AIM_VRAM_IDLE_MB` (по умолчанию 1536 МБ), память перестала уменьшаться
+(3 замера подряд меньше 128 МБ разницы) или прошло 30 с (тогда предупреждение в логе). Если счётчик
+недоступен — пауза 3 с. `AIM_VRAM_IDLE_MB=0` отключает ожидание (тесты с фейковыми бэкендами).
+
 ## 7. Веб-интерфейс
 
 `GET /` — одностраничный UI: ввод пароля, таблица моделей с кнопками
@@ -387,7 +399,7 @@ running --start другой модели--> stopped (автоматически
 | `scripts/run.bat` | Запуск сервиса с авто-перезапуском при падении и зависании (запускает `watchdog.ps1`) |
 | `scripts/watchdog.ps1` | Внешний сторож: перезапуск, если `/health` не отвечает (см. 8.1) |
 | `scripts/restart.bat` | Перезапуск только процесса AI Manager этого проекта |
-| `scripts/install_autostart.bat` | Задача планировщика: запуск при входе в Windows |
+| `scripts/install_autostart.bat` | Задача планировщика: запуск при входе в Windows, без лимита времени выполнения (`schtasks` по умолчанию останавливает задачу через 72 ч — так сервис остановился 22.10.2026) |
 | `scripts/remove_autostart.bat` | Удаление задачи автозапуска |
 | `scripts/download_llama_server.ps1` | Скачивание последней сборки llama-server |
 | `scripts/open_firewall.bat` | Настройка правил брандмауэра + добавление LAN-адресов (требует прав администратора) |

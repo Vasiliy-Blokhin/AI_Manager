@@ -1,3 +1,8 @@
+"""Модуль управляет жизненным циклом моделей: хранит реестр, обеспечивает установку, запуск и остановку
+моделей, гарантируя, что одновременно активна только одна. Предоставляет API для получения статуса, списка
+моделей и выполнения инференса (чат, генерация изображений, TTS).
+"""
+
 from __future__ import annotations
 
 import threading
@@ -7,6 +12,7 @@ from .backends.base import Backend, BackendError
 from .backends.llama_server import LlamaServerBackend
 from .backends.llama_tts import LlamaTtsBackend
 from .backends.openvino_sd import OpenVinoSdBackend
+from .gpu_mem import wait_vram_released
 from .registry import ModelEntry, Registry
 from .schemas import (ChatRequest, ChatResponse, ImageRequest, ImageResponse, ModelInfo,
                       TTSRequest, TTSResponse)
@@ -17,7 +23,6 @@ BACKENDS = {
     OpenVinoSdBackend.backend_name: OpenVinoSdBackend,
     LlamaTtsBackend.backend_name: LlamaTtsBackend,
 }
-
 
 class ModelNotFoundError(KeyError):
     """Исключение: модель не найдена в реестре."""
@@ -172,6 +177,9 @@ class ModelManager:
         be = self._backends.get(self._active)
         if be:
             be.stop()  # освобождает VRAM — ключевой механизм инварианта I1
+            idle_mb = float(self.settings.get("vram_idle_mb", 1536))
+            if idle_mb > 0:  # 0 — не ждать (тесты с фейковыми бэкендами)
+                wait_vram_released(idle_mb)
         name, self._active = self._active, None
         return [name]
 
